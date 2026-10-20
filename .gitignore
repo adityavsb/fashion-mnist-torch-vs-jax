@@ -42,3 +42,14 @@ build/
 .coverage
 htmlcov/
 *.log
+
+# Secrets, environment files, and credentials (defense-in-depth)
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.cert
+id_*
+credentials.json
+token.json

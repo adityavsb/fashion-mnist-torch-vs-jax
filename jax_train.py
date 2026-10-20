@@ -2,6 +2,7 @@
 JAX / Flax Implementation of Scaled Image Classification.
 Supports:
 - Architectures: MLP and Deep Convolutional Neural Network (CNN)
+- Precision: FP32 vs FP16 (jnp.float16)
 - Datasets: Fashion-MNIST (1x28x28) and CIFAR-10 (3x32x32 RGB)
 - Functional State: Flax Linen + Optax Adam optimizer
 - Hardware: XLA Compiled execution via @jax.jit
@@ -15,45 +16,51 @@ from flax import linen as nn
 import optax
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
+from flax.training import train_state
 
-# 1. Architectures in Flax
+class CustomTrainState(train_state.TrainState):
+    batch_stats: dict
+
 class SimpleMLP(nn.Module):
     num_classes: int = 10
     hidden_dim: int = 256
+    dtype: any = jnp.float32
 
     @nn.compact
     def __call__(self, x, train: bool = True):
+        x = x.astype(self.dtype)
         x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(features=self.hidden_dim)(x)
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype)(x)
         x = nn.relu(x)
-        x = nn.Dense(features=self.hidden_dim)(x)
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype)(x)
         x = nn.relu(x)
-        x = nn.Dense(features=self.num_classes)(x)
+        x = nn.Dense(features=self.num_classes, dtype=self.dtype)(x)
         return x
 
 class SimpleCNN(nn.Module):
     num_classes: int = 10
+    dtype: any = jnp.float32
 
     @nn.compact
     def __call__(self, x, train: bool = True):
+        x = x.astype(self.dtype)
         # x is (B, H, W, C)
-        x = nn.Conv(features=32, kernel_size=(3, 3), padding='SAME')(x)
-        x = nn.BatchNorm(use_running_average=not train)(x)
+        x = nn.Conv(features=32, kernel_size=(3, 3), padding='SAME', dtype=self.dtype)(x)
+        x = nn.BatchNorm(use_running_average=not train, dtype=self.dtype)(x)
         x = nn.relu(x)
         x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
 
-        x = nn.Conv(features=64, kernel_size=(3, 3), padding='SAME')(x)
-        x = nn.BatchNorm(use_running_average=not train)(x)
+        x = nn.Conv(features=64, kernel_size=(3, 3), padding='SAME', dtype=self.dtype)(x)
+        x = nn.BatchNorm(use_running_average=not train, dtype=self.dtype)(x)
         x = nn.relu(x)
         x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
 
         x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(features=128)(x)
+        x = nn.Dense(features=128, dtype=self.dtype)(x)
         x = nn.relu(x)
-        x = nn.Dense(features=self.num_classes)(x)
+        x = nn.Dense(features=self.num_classes, dtype=self.dtype)(x)
         return x
 
-# 2. Data Loading
 def get_dataloaders(dataset_name="FashionMNIST", batch_size=64):
     if dataset_name.lower() == "cifar10":
         transform = transforms.Compose([
@@ -75,7 +82,6 @@ def get_dataloaders(dataset_name="FashionMNIST", batch_size=64):
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return train_loader, test_loader
 
-# 3. Compiled Training Step
 @jax.jit
 def train_step(state, batch_x, batch_y):
     def loss_fn(params):
@@ -85,8 +91,10 @@ def train_step(state, batch_x, batch_y):
             train=True,
             mutable=["batch_stats"]
         )
+        # Compute loss in float32 for numerical stability
+        logits_f32 = logits.astype(jnp.float32)
         one_hot = jax.nn.one_hot(batch_y, 10)
-        loss = optax.softmax_cross_entropy(logits=logits, labels=one_hot).mean()
+        loss = optax.softmax_cross_entropy(logits=logits_f32, labels=one_hot).mean()
         return loss, (logits, updates)
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -102,9 +110,10 @@ def eval_step(state, batch_x, batch_y):
         batch_x,
         train=False
     )
+    logits_f32 = logits.astype(jnp.float32)
     one_hot = jax.nn.one_hot(batch_y, 10)
-    loss = optax.softmax_cross_entropy(logits=logits, labels=one_hot).mean()
-    preds = jnp.argmax(logits, axis=-1)
+    loss = optax.softmax_cross_entropy(logits=logits_f32, labels=one_hot).mean()
+    preds = jnp.argmax(logits_f32, axis=-1)
     acc = jnp.mean(preds == batch_y) * 100.0
     return loss, acc
 
@@ -113,7 +122,6 @@ def evaluate(state, dataloader):
     total_loss = 0.0
     num_samples = 0
     for images, labels in dataloader:
-        # Convert torch (B, C, H, W) -> JAX (B, H, W, C)
         x = jnp.array(images.numpy().transpose(0, 2, 3, 1))
         y = jnp.array(labels.numpy())
         batch_size = x.shape[0]
@@ -123,23 +131,19 @@ def evaluate(state, dataloader):
         num_samples += batch_size
     return total_loss / num_samples, total_acc / num_samples
 
-from flax.training import train_state
-
-class CustomTrainState(train_state.TrainState):
-    batch_stats: dict
-
-def run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=128, lr=1e-3):
-    print(f"[JAX] Backend: {jax.default_backend()} | Model: {model_type.upper()} | Dataset: {dataset_name} | Batch: {batch_size}")
+def run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=128, lr=1e-3, use_fp16=False):
+    precision_dtype = jnp.float16 if use_fp16 else jnp.float32
+    precision_tag = "FP16" if use_fp16 else "FP32"
+    print(f"[JAX] Backend: {jax.default_backend()} | Model: {model_type.upper()} | Precision: {precision_tag} | Batch: {batch_size}")
 
     train_loader, test_loader = get_dataloaders(dataset_name=dataset_name, batch_size=batch_size)
     in_channels = 3 if dataset_name.lower() == "cifar10" else 1
     spatial_size = 32 if dataset_name.lower() == "cifar10" else 28
 
-    model = SimpleCNN() if model_type.lower() == "cnn" else SimpleMLP()
+    model = SimpleCNN(dtype=precision_dtype) if model_type.lower() == "cnn" else SimpleMLP(dtype=precision_dtype)
 
-    # Initialize model variables with sample shape (1, H, W, C)
     key = jax.random.PRNGKey(42)
-    dummy_input = jnp.ones((1, spatial_size, spatial_size, in_channels))
+    dummy_input = jnp.ones((1, spatial_size, spatial_size, in_channels), dtype=precision_dtype)
     variables = model.init(key, dummy_input, train=False)
     
     params = variables["params"]
@@ -162,7 +166,7 @@ def run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=
         total_samples = 0
         
         for images, labels in train_loader:
-            x = jnp.array(images.numpy().transpose(0, 2, 3, 1))
+            x = jnp.array(images.numpy().transpose(0, 2, 3, 1), dtype=precision_dtype)
             y = jnp.array(labels.numpy())
             state, loss = train_step(state, x, y)
             loss.block_until_ready()
@@ -183,4 +187,4 @@ def run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=
     return history
 
 if __name__ == "__main__":
-    run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=128)
+    run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=3, batch_size=256, use_fp16=True)

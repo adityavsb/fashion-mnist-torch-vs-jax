@@ -6,7 +6,11 @@
 [![Hardware](https://img.shields.io/badge/Hardware-Apple%20M4%20Mac%20mini-black.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An empirical hobby project testing the real-world deep learning performance and GPU acceleration of the **Apple M4 Mac mini**, comparing **PyTorch (Metal Performance Shaders / MPS)** against **JAX (XLA JIT compiler)**.
+An empirical hobby project testing the real-world deep learning performance and GPU acceleration of the **Apple M4 Mac mini**, comparing **PyTorch (Metal Performance Shaders / MPS)** against **JAX (XLA JIT compiler)** across three incremental iterations:
+
+1. **Iteration 1 (Baseline):** Lightweight MLP & kernel dispatch latency.
+2. **Iteration 2 (Scaling):** Deep CNN & batch size throughput sweep (64 to 512).
+3. **Iteration 3 (Advanced Optimization):** Graph compilation (`torch.compile` vs. `@jax.jit`) and mixed precision (FP32 vs. FP16 AMP) with unified memory profiling.
 
 ---
 
@@ -16,10 +20,9 @@ Apple's launch of the **M4 Mac mini** came with significant claims about massive
 
 As a practitioner, I wanted to see past the marketing announcements and run an **honest, empirical benchmark** on my own desk:
 * *Does Apple's Metal Performance Shaders (MPS) backend actually deliver tangible GPU speedups for everyday deep learning tasks?*
-* *How does PyTorch's GPU acceleration compare against JAX's fused XLA machine code compiling directly to the Apple M4 ARM architecture?*
+* *How does PyTorch's new `torch.compile` Inductor backend perform on Apple Silicon compared to eager PyTorch and JAX's mature XLA compiler?*
+* *Does half-precision FP16 mixed precision yield throughput and memory benefits on unified memory?*
 * *Where is the real crossover point where the GPU outpaces the CPU?*
-
-To answer this, I built side-by-side implementations of identical neural network architectures and benchmarked them across two iterations: from a lightweight model to a compute-heavy scaled CNN with batch size sweeps.
 
 ---
 
@@ -37,7 +40,36 @@ JAX Backend:         jax 0.12.0 / flax 0.12.10 (XLA CPU Vectorized)
 
 ---
 
-## Benchmark Results
+## Benchmark Results Across 3 Iterations
+
+### Iteration 3: Compilers (`torch.compile`) & Mixed Precision (FP16)
+
+Tested on the Deep CNN architecture at batch size 256 for 3 epochs:
+
+#### Experiment A: The Compiler Face-Off (Eager vs. `torch.compile` vs. JAX)
+
+| Engine | Backend | Warmup Epoch 1 | Steady-State Throughput | Speedup vs Eager |
+| :--- | :---: | :---: | :---: | :---: |
+| **PyTorch Eager** | Apple M4 MPS GPU | `5.87s` | `11,761 img/s` | `1.00x` (baseline) |
+| **PyTorch `torch.compile`** | Apple M4 MPS GPU | `5.86s` | **`13,167 img/s`** | **`1.12x` (+12% faster)** 🚀 |
+| **JAX `@jax.jit`** | XLA Compiled CPU | `9.52s` | `6,333 img/s` | `0.54x` |
+
+#### Experiment B: Mixed Precision (FP32 vs. FP16 AMP) & Memory Footprint
+
+| Configuration | Throughput (img/s) | Speedup Factor | Peak GPU Memory Allocated |
+| :--- | :---: | :---: | :---: |
+| **PyTorch FP32 (MPS)** | `11,761 img/s` | `1.00x` | `6.4 MB` |
+| **PyTorch FP16 AMP (MPS)** | `11,284 img/s` | `0.96x` | `6.4 MB` |
+| **JAX FP32 (XLA)** | `6,333 img/s` | `1.00x` | *System RAM* |
+| **JAX FP16 (XLA)** | `6,674 img/s` | `1.05x` (+5.4%) | *System RAM* |
+
+![Iteration 3 Benchmark](assets/benchmark_iteration3.png)
+
+> **Key Systems Takeaways from Iteration 3:**
+> 1. **`torch.compile` works on Apple Silicon MPS:** Compiling with TorchDynamo and the MPS backend delivers a **+12% steady-state throughput boost**, pushing training past **13,100 images/second** with virtually zero initial warmup penalty ($5.86$s vs $5.87$s).
+> 2. **FP16 on Small Models:** Because our CNN has a tiny footprint ($6.4$ MB of weights and activations), unified memory bandwidth is not the bottleneck. The overhead of software dynamic casting in `torch.autocast` slightly offsets ALU gains on smaller models. FP16 shines most when models exceed cache capacities (e.g. LLMs / ViTs).
+
+---
 
 ### Iteration 2: Deep CNN & Batch Size Scaling (Heavy Compute)
 
@@ -52,9 +84,8 @@ In this iteration, the workload was scaled to a compute-intensive **Deep Convolu
 
 ![Scaling Benchmark Comparison](assets/benchmark_scaling.png)
 
-#### Key Systems Insight & The Crossover Point:
-* **The GPU Crossover Point happens between batch size 64 and 128.**
-* **Small Batches ($\le 64$):** GPU kernel dispatch latency over Metal command buffers throttles the GPU. JAX's `@jax.jit` wins because it fuses forward propagation, autograd, and Adam momentum updates into a single machine code kernel that executes entirely within the Apple M4's low-latency CPU cache.
+#### The GPU Crossover Point:
+* **Small Batches ($\le 64$):** GPU kernel dispatch latency over Metal command buffers throttles the GPU. JAX's `@jax.jit` wins because it fuses operations into a single kernel executing within the Apple M4's low-latency CPU cache.
 * **Large Batches ($\ge 128$):** The compute volume fully saturates the M4 GPU's parallel SIMD execution units. PyTorch on MPS scales from **$5,392$ to $12,606$ images/sec** ($2.34\times$ throughput scaling), outperforming compiled CPU execution by more than **$2.1\times$**.
 
 ---
@@ -71,17 +102,14 @@ To establish a baseline, I first trained an identical 3-layer Multi-Layer Percep
 
 ![MLP Benchmark Comparison](assets/benchmark_results.png)
 
-*Takeaway:* For small networks with lightweight matrix multiplications, moving tensors across Metal GPU buffers is slower than executing a fused JIT loop on the M4 CPU.
-
 ---
 
 ## Architectural Parity: PyTorch vs JAX
 
 Both models use mathematically equivalent initializations, loss formulations, and hyperparameters.
 
-### PyTorch (Stateful Object-Oriented)
+### PyTorch (Stateful Object-Oriented + Compiler & AMP)
 ```python
-# Model owns mutable parameters and state
 class SimpleCNN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -92,32 +120,29 @@ class SimpleCNN(nn.Module):
     def forward(self, x):
         return self.fc(torch.flatten(F.relu(self.bn(self.conv(x))), 1))
 
-# Training step mutates parameters in-place
-optimizer.zero_grad()
-outputs = model(images)
-loss = criterion(outputs, labels)
+# Optional compilation & mixed precision
+model = torch.compile(model.to("mps"))
+with torch.autocast(device_type="mps", dtype=torch.float16):
+    loss = criterion(model(images), labels)
 loss.backward()
 optimizer.step()
 ```
 
-### JAX / Flax (Pure Functional Transforms)
+### JAX / Flax (Pure Functional Transforms + XLA Compilation)
 ```python
-# Model is a pure stateless mathematical transformation
 class SimpleCNN(nn.Module):
+    dtype: any = jnp.float32
+
     @nn.compact
     def __call__(self, x, train=True):
-        x = nn.Conv(features=32, kernel_size=(3, 3), padding='SAME')(x)
-        x = nn.BatchNorm(use_running_average=not train)(x)
-        return nn.Dense(features=10)(x.reshape((x.shape[0], -1)))
+        x = nn.Conv(features=32, kernel_size=(3, 3), padding='SAME', dtype=self.dtype)(x)
+        x = nn.BatchNorm(use_running_average=not train, dtype=self.dtype)(x)
+        return nn.Dense(features=10, dtype=self.dtype)(x.reshape((x.shape[0], -1)))
 
-# Training step is a compiled mathematical function returning new state
 @jax.jit
 def train_step(state, x, y):
     def loss_fn(params):
-        logits, updates = state.apply_fn(
-            {'params': params, 'batch_stats': state.batch_stats}, 
-            x, train=True, mutable=['batch_stats']
-        )
+        logits, updates = state.apply_fn({'params': params, 'batch_stats': state.batch_stats}, x, train=True, mutable=['batch_stats'])
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
         return loss, updates
     (loss, updates), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
@@ -150,29 +175,33 @@ pip install -r requirements.txt
 python device_check.py
 ```
 
-### 3. Run the Multi-Scale Benchmark Suite
+### 3. Run Benchmark Suites
 
 ```bash
-# Sweeps batch sizes (64 to 512), benchmarks throughput, and generates scaling plots:
+# Run Iteration 3: Compilers (torch.compile vs JAX JIT) & FP16 Mixed Precision
 python benchmark.py
 ```
 
 ### 4. Run Individual Implementations
 
 ```bash
-# PyTorch on Apple Silicon MPS GPU
-python torch_train.py
+# PyTorch with torch.compile on Apple Silicon MPS GPU
+python -c "from torch_train import run_pytorch; run_pytorch(model_type='cnn', use_compile=True, batch_size=256)"
 
-# JAX / Flax compiled with XLA
-python jax_train.py
+# PyTorch with FP16 Mixed Precision (AMP)
+python -c "from torch_train import run_pytorch; run_pytorch(model_type='cnn', use_amp=True, batch_size=256)"
+
+# JAX / Flax compiled with XLA (FP16)
+python -c "from jax_train import run_jax; run_jax(model_type='cnn', use_fp16=True, batch_size=256)"
 ```
 
 ---
 
 ## Summary Verdict on the M4 Mac Mini
 
-* **The M4 GPU is genuinely fast for compute-heavy workloads:** Once batch size hits $128+$ on convolutional networks, Apple's Metal Performance Shaders deliver over **12,600 images/second**, running more than **$2\times$ faster** than CPU execution.
-* **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or your batch size is small ($\le 64$), Apple Silicon GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
+* **The M4 GPU is genuinely fast for compute-heavy workloads:** At batch size $128+$ on convolutional networks, Apple's Metal Performance Shaders deliver over **12,600 images/second**, running more than **$2\times$ faster** than CPU execution.
+* **`torch.compile` is ready on Apple Silicon:** Enabling `torch.compile` gave an immediate **+12% speedup**, pushing throughput past **13,100 images/second** with negligible compilation overhead.
+* **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or batch size is tiny ($\le 64$), GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
 * **Verdict:** The M4 Mac mini is a highly capable, silent, and power-efficient local deep learning testbench for rapid prototyping before scaling to cloud clusters.
 
 ---

@@ -1,0 +1,13 @@
+# Core Deep Learning Frameworks
+torch>=2.2.0
+torchvision>=0.17.0
+jax>=0.4.25
+jaxlib>=0.4.25
+
+# Note: Apple Silicon GPU is natively accelerated in PyTorch via MPS.
+# JAX runs via Apple Silicon optimized XLA CPU (jax-metal is pinned to older bytecode).
+
+# Supporting libraries
+numpy>=1.26.0
+matplotlib>=3.8.0
+tqdm>=4.66.0

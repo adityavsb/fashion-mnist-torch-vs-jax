@@ -24,6 +24,8 @@ As a practitioner, I wanted to see past the marketing announcements and run an *
 * *Does half-precision FP16 mixed precision yield throughput and memory benefits on unified memory?*
 * *Where is the real crossover point where the GPU outpaces the CPU?*
 
+For detailed technical trade-offs (including why JAX is evaluated on XLA CPU and the root cause of FP16 AMP overhead on unified memory), see [Architecture Decision Records (docs/decisions.md)](docs/decisions.md).
+
 ---
 
 ## Testbench & Hardware Specifications

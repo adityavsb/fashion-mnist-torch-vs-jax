@@ -14,7 +14,7 @@ An empirical hobby project testing the real-world deep learning performance and 
 
 ---
 
-## The Motivation: Testing Apple Silicon M4 Hype vs. Reality
+## Hardware Context & Motivation
 
 Apple's launch of the **M4 Mac mini** came with significant claims about massive GPU gains, unified memory bandwidth, and on-device machine learning acceleration. 
 
@@ -48,7 +48,7 @@ JAX Backend:         jax 0.12.0 / flax 0.12.10 (XLA CPU Vectorized)
 
 Tested on the two-layer CNN architecture (421,834 parameters) at batch size 256 for 3 epochs:
 
-#### Experiment A: The Compiler Face-Off (Eager vs. `torch.compile` vs. JAX)
+#### Experiment A: Compiler Benchmark (Eager vs. `torch.compile` vs. JAX)
 
 | Engine | Backend | Warm-up cost (E1 − steady) | Steady-State Throughput | Speedup vs Eager |
 | :--- | :---: | :---: | :---: | :---: |
@@ -79,32 +79,32 @@ Each cell is the median of 5 independent processes (3 epochs each; steady state 
 
 ### Iteration 2: Two-layer CNN & Batch Size Scaling
 
-In this iteration, the workload was evaluated on a two-convolution CNN (421,834 parameters: (Conv2D → BatchNorm → ReLU → MaxPool) ×2 → Dense(128) → ReLU → Dense(10)) with a batch size sweep from $64$ to $512$ on Fashion-MNIST:
+In this iteration, the workload was evaluated on a two-convolution CNN (421,834 parameters: (Conv2D → BatchNorm → ReLU → MaxPool) ×2 → Dense(128) → ReLU → Dense(10)) with a batch size sweep from 64 to 512 on Fashion-MNIST:
 
-| Batch Size | PyTorch (M4 GPU via MPS) | JAX (Fused XLA `@jax.jit`) | Winner / Ratio |
+| Batch Size | PyTorch (M4 GPU via MPS) | JAX (Fused XLA `@jax.jit`) | Faster Engine (Ratio) |
 | :---: | :---: | :---: | :---: |
-| **64** | `6,953 [6,643–7,567] img/s` | **`8,739 [8,558–8,972] img/s`** | **JAX is 1.3x faster** ⚡ (low dispatch overhead) |
-| **128** | **`13,839 [13,238–14,377] img/s`** | `8,008 [6,990–8,068] img/s` | **PyTorch GPU is 1.7x faster** |
-| **256** | **`16,473 [15,935–16,483] img/s`** | `7,683 [6,920–7,715] img/s` | **PyTorch GPU is 2.1x faster** |
-| **512** | **`16,638 [15,366–17,180] img/s`** | `6,666 [6,401–6,849] img/s` | **PyTorch GPU is 2.5x faster** 🚀 |
+| **64** | `6,953 [6,643–7,567] img/s` | **`8,739 [8,558–8,972] img/s`** | **JAX (1.3x)** — low dispatch overhead |
+| **128** | **`13,839 [13,238–14,377] img/s`** | `8,008 [6,990–8,068] img/s` | **PyTorch GPU (1.7x)** |
+| **256** | **`16,473 [15,935–16,483] img/s`** | `7,683 [6,920–7,715] img/s` | **PyTorch GPU (2.1x)** |
+| **512** | **`16,638 [15,366–17,180] img/s`** | `6,666 [6,401–6,849] img/s` | **PyTorch GPU (2.5x)** |
 
 Each cell is the median of 5 independent processes (2 epochs each; steady state = epoch 2). Range in brackets.
 
 ![Scaling Benchmark Comparison](assets/benchmark_scaling.png)
 
 #### The GPU Crossover Point:
-* **Small Batches ($\le 64$):** GPU kernel dispatch latency over Metal command buffers throttles the GPU. JAX's `@jax.jit` wins because it fuses the step into a small number of XLA computations with no Metal command-buffer round-trips; per-step fixed overhead, not arithmetic, dominates at this batch size.
-* **Large Batches ($\ge 128$):** Per-batch fixed costs are amortised over more images; GPU utilisation was not profiled. PyTorch on MPS scales from **6,953 to 16,638 images/sec** ($2.4\times$ throughput scaling), outperforming compiled CPU execution by **$2.5\times$** at batch size 512.
+* **Small Batches (≤ 64):** GPU kernel dispatch latency over Metal command buffers throttles the GPU. JAX's `@jax.jit` wins because it fuses the step into a small number of XLA computations with no Metal command-buffer round-trips; per-step fixed overhead, not arithmetic, dominates at this batch size.
+* **Large Batches (≥ 128):** Per-batch fixed costs are amortised over more images; GPU utilisation was not profiled. PyTorch on MPS scales from **6,953 to 16,638 images/sec** (2.4x throughput scaling), outperforming compiled CPU execution by **2.5x** at batch size 512.
 
 ---
 
 ### Iteration 1: Lightweight MLP Baseline
 
-To establish a baseline, I first trained an identical 3-layer Multi-Layer Perceptron ($784 \rightarrow 256 \rightarrow 256 \rightarrow 10$) with the Adam optimizer ($lr=10^{-3}$), batch size 64, 5 epochs, PyTorch on MPS, JAX on XLA:CPU (full 60,000-image epochs; `drop_last` was not set in this iteration):
+To establish a baseline, I first trained an identical 3-layer Multi-Layer Perceptron (784 -> 256 -> 256 -> 10) with the Adam optimizer (lr = 1e-3), batch size 64, 5 epochs, PyTorch on MPS, JAX on XLA:CPU (full 60,000-image epochs; `drop_last` was not set in this iteration):
 
 | Metric | PyTorch (MPS GPU) | JAX (`@jax.jit`) | Advantage |
 | :--- | :--- | :--- | :--- |
-| **Final Train Loss** | `0.2810` | `0.2821` | Numerical Parity ($\Delta = 0.0011$) |
+| **Final Train Loss** | `0.2810` | `0.2821` | Numerical Parity (Δ = 0.0011) |
 | **Final Test Accuracy** | `87.82%` | `87.21%` | Numerical Parity |
 | **Average Time / Epoch** | `1.48s` | `0.62s` | **JAX is 2.4x faster** |
 | **Steady-State Throughput** | `46,329 [26,851–46,517] img/s` | `106,214 [81,042–110,169] img/s` | **JAX is 2.3x faster** |
@@ -277,9 +277,9 @@ Running this benchmark showed me how misleading headline numbers can be when sma
 
 ## Summary Verdict on the M4 Mac Mini
 
-* **The M4 GPU is fast for batch-scaled workloads:** At batch size $128+$ on convolutional networks, Apple's Metal Performance Shaders deliver over **13,800 images/second**, running more than **$1.7\times$ faster** than CPU execution.
+* **The M4 GPU is fast for batch-scaled workloads:** At batch size 128+ on convolutional networks, Apple's Metal Performance Shaders deliver over **13,800 images/second**, running more than **1.7x faster** than CPU execution.
 * **Compilers and precision on Apple Silicon:** `torch.compile` on MPS shows run-to-run variance across fresh process launches, while FP16 AMP delivers a solid **1.4x** speedup reaching **14,700+ images/second** on the 422k-parameter CNN.
-* **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or batch size is tiny ($\le 64$), GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
+* **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or batch size is tiny (≤ 64), GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
 * **Verdict:** The M4 Mac mini is a capable local testbench for small-model prototyping before scaling to cloud hardware.
 
 ---

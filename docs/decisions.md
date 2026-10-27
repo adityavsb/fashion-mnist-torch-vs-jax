@@ -22,7 +22,7 @@ Benchmark PyTorch on the **Apple M4 GPU via MPS** against JAX on the **Apple M4 
 
 ### Consequences
 * This reflects the real-world operational choice for Apple Silicon engineers: Apple's specialized Metal GPU pipeline vs. Google's mature XLA whole-graph compiler running within low-latency CPU cache.
-* It directly exposes the kernel dispatch latency penalty: at small batch sizes ($\le 64$), JAX XLA CPU outperforms PyTorch GPU by $1.47\times$ because CPU dispatch avoids Metal command buffer submission overhead.
+* It directly exposes the kernel dispatch latency penalty: at small batch sizes (≤ 64), JAX XLA CPU outperforms PyTorch GPU by 1.5x because CPU dispatch avoids Metal command buffer submission overhead.
 
 ---
 
@@ -43,7 +43,7 @@ Deep learning performance benchmarks on local workstations are frequently confou
 If the dataloader cannot feed the GPU fast enough, GPU utilization drops and the benchmark measures Python I/O rather than raw hardware execution.
 
 ### Decision
-Choose **Fashion-MNIST** ($28 \times 28$ grayscale images, 60,000 samples, 10 classes) loaded entirely into unified memory.
+Choose **Fashion-MNIST** (28×28 grayscale images, 60,000 samples, 10 classes) loaded entirely into unified memory.
 
 ### Consequences
 * Eliminates disk throughput and image decoding jitter completely.
@@ -69,8 +69,8 @@ Evaluate FP16 mixed precision on the M4 Mac mini using:
 * JAX/Flax: compute dtype `jnp.float16` on every layer (`dtype=`); parameters remain float32 (Flax `param_dtype` default). This is mixed precision, not pure FP16.
 
 ### Empirical Findings & Trade-Off
-* **Result:** PyTorch FP16 on MPS achieved **$11,284\text{ img/s}$** compared to **$11,761\text{ img/s}$** on FP32—a **$4\%$ throughput degradation** ($0.96\times$).
-* **Root Cause:** our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256. On the Apple M4's $120\text{ GB/s}$ unified memory architecture, memory bandwidth is not saturated. `torch.autocast` inserts per-op dtype casts around each kernel; no `GradScaler` is used in this benchmark (loss scaling is not performed). On a 422k-parameter model the cast overhead is comparable to the arithmetic saved, so no net gain is expected; this is an observation, not a profiled root cause.
+* **Result:** PyTorch FP16 on MPS achieved **11,284 img/s** compared to **11,761 img/s** on FP32 (a 4% throughput degradation, 0.96x).
+* **Root Cause:** our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256. On the Apple M4's 120 GB/s unified memory architecture, memory bandwidth is not saturated. `torch.autocast` inserts per-op dtype casts around each kernel; no `GradScaler` is used in this benchmark (loss scaling is not performed). On a 422k-parameter model the cast overhead is comparable to the arithmetic saved, so no net gain is expected; this is an observation, not a profiled root cause.
 * **Engineering Rationale:** The FP16 result is reported as measured. FP16 on Apple Silicon provides massive leverage for memory-bound workloads (LLMs, large Vision Transformers), but should not be blindly enabled for lightweight convolutional models.
 
 ---
@@ -94,5 +94,5 @@ Evaluate:
 2. Steady-state throughput across epochs 2–3.
 
 ### Consequences
-* In isolated multi-process benchmarks ($N=5$), `torch.compile` on Apple Silicon MPS exhibits significant launch variance (steady-state median $6,814\text{ img/s}$, range $6,600–11,663\text{ img/s}$) with an initial compilation warmup penalty of $1.05\text{s}$.
+* In isolated multi-process benchmarks ($N=5$), `torch.compile` on Apple Silicon MPS exhibits significant launch variance (steady-state median 6,814 img/s, range 6,600–11,663 img/s) with an initial compilation warmup penalty of 1.05 s.
 * Shows that `torch.compile` captures and accelerates this small CNN on MPS without graph breaks; larger models were not tested.

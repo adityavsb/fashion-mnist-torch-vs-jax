@@ -34,7 +34,7 @@ def render_iteration3():
     fp16_r = f"{fp16_m:,.0f} [{data['torch_fp16']['steady_min']:,.0f}–{data['torch_fp16']['steady_max']:,.0f}] img/s"
     jfp16_r = f"{jfp16_m:,.0f} [{data['jax_fp16']['steady_min']:,.0f}–{data['jax_fp16']['steady_max']:,.0f}] img/s"
 
-    print("#### Experiment A: The Compiler Face-Off (Eager vs. `torch.compile` vs. JAX)\n")
+    print("#### Experiment A: Compiler Benchmark (Eager vs. `torch.compile` vs. JAX)\n")
     print("| Engine | Backend | Warm-up cost (E1 − steady) | Steady-State Throughput | Speedup vs Eager |")
     print("| :--- | :---: | :---: | :---: | :---: |")
     print(f"| **PyTorch Eager** | Apple M4 MPS GPU | `{data['torch_eager']['warmup_median_s']:.2f}s` | `{eager_r}` | `1.0x` (baseline) |")
@@ -55,18 +55,16 @@ def render_iteration2():
         data = json.load(f)
 
     print("### Iteration 2: Two-layer CNN & Batch Size Scaling\n")
-    print("| Batch Size | PyTorch (M4 GPU via MPS) | JAX (Fused XLA `@jax.jit`) | Winner / Ratio |")
+    print("| Batch Size | PyTorch (M4 GPU via MPS) | JAX (Fused XLA `@jax.jit`) | Faster Engine (Ratio) |")
     print("| :---: | :---: | :---: | :---: |")
     for bs, ts, js in zip(data["batch_sizes"], data["torch_summaries"], data["jax_summaries"]):
         tm, jm = ts["steady_median"], js["steady_median"]
         tr = f"{tm:,.0f} [{ts['steady_min']:,.0f}–{ts['steady_max']:,.0f}] img/s"
         jr = f"{jm:,.0f} [{js['steady_min']:,.0f}–{js['steady_max']:,.0f}] img/s"
         if bs == 64:
-            print(f"| **{bs}** | `{tr}` | **`{jr}`** | **JAX is {jm/tm:.1f}x faster** ⚡ (low dispatch overhead) |")
-        elif bs == 512:
-            print(f"| **{bs}** | **`{tr}`** | `{jr}` | **PyTorch GPU is {tm/jm:.1f}x faster** 🚀 |")
+            print(f"| **{bs}** | `{tr}` | **`{jr}`** | **JAX ({jm/tm:.1f}x)** — low dispatch overhead |")
         else:
-            print(f"| **{bs}** | **`{tr}`** | `{jr}` | **PyTorch GPU is {tm/jm:.1f}x faster** |")
+            print(f"| **{bs}** | **`{tr}`** | `{jr}` | **PyTorch GPU ({tm/jm:.1f}x)** |")
     print()
 
 def render_iteration1():
@@ -83,7 +81,7 @@ def render_iteration1():
     print("### Iteration 1: Lightweight MLP Baseline\n")
     print("| Metric | PyTorch (MPS GPU) | JAX (`@jax.jit`) | Advantage |")
     print("| :--- | :--- | :--- | :--- |")
-    print(rf"| **Final Train Loss** | `0.2810` | `0.2821` | Numerical Parity ($\Delta = 0.0011$) |")
+    print(rf"| **Final Train Loss** | `0.2810` | `0.2821` | Numerical Parity (Δ = 0.0011) |")
     print(f"| **Final Test Accuracy** | `87.82%` | `87.21%` | Numerical Parity |")
     print(f"| **Average Time / Epoch** | `1.48s` | `0.62s` | **JAX is 2.4x faster** |")
     print(f"| **Steady-State Throughput** | `{tr}` | `{jr}` | **JAX is {jm/tm:.1f}x faster** |\n")

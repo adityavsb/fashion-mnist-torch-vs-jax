@@ -6,12 +6,26 @@ Experiments:
 Outputs charts to assets/benchmark_iteration3.png and prints analytical summary tables.
 """
 import os
+import json
+import subprocess
+import sys
 import matplotlib.pyplot as plt
 import numpy as np
-from torch_train import run_pytorch
-from jax_train import run_jax
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def run_isolated(fn_module, fn_name, **kwargs):
+    code = (
+        f"import sys, os; sys.path.insert(0, {SCRIPT_DIR!r}); "
+        f"import json, {fn_module} as m; "
+        f"h = m.{fn_name}(**{kwargs!r}); print('__RESULT__' + json.dumps(h))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], cwd=SCRIPT_DIR, capture_output=True, text=True, check=True).stdout
+    return json.loads(out.split("__RESULT__", 1)[1])
 
 def run_iteration3_benchmark(dataset_name="FashionMNIST", batch_size=256, epochs=3, output_plot="assets/benchmark_iteration3.png"):
+    if not os.path.isabs(output_plot):
+        output_plot = os.path.join(SCRIPT_DIR, output_plot)
     print("=" * 80)
     print(f"ITERATION 3: COMPILERS & MIXED PRECISION BENCHMARK (Apple M4 Mac Mini)")
     print(f"Dataset: {dataset_name} | Architecture: Deep CNN | Batch Size: {batch_size}")
@@ -23,13 +37,13 @@ def run_iteration3_benchmark(dataset_name="FashionMNIST", batch_size=256, epochs
     print("\n>>> Experiment A: Compiler Face-Off (Warmup vs Steady-State) <<<")
     
     print("\n[A.1] Running PyTorch Eager (MPS)...")
-    torch_eager = run_pytorch(model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_compile=False)
+    torch_eager = run_isolated("torch_train", "run_pytorch", model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_compile=False)
 
     print("\n[A.2] Running PyTorch torch.compile (MPS)...")
-    torch_compiled = run_pytorch(model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_compile=True)
+    torch_compiled = run_isolated("torch_train", "run_pytorch", model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_compile=True)
 
     print("\n[A.3] Running JAX @jax.jit (XLA)...")
-    jax_compiled = run_jax(model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_fp16=False)
+    jax_compiled = run_isolated("jax_train", "run_jax", model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_fp16=False)
 
     # -------------------------------------------------------------
     # Experiment B: Precision & Memory (FP32 vs FP16)
@@ -37,45 +51,54 @@ def run_iteration3_benchmark(dataset_name="FashionMNIST", batch_size=256, epochs
     print("\n>>> Experiment B: Mixed Precision FP16 (AMP) & Memory Allocation <<<")
     
     print("\n[B.1] Running PyTorch FP16 (autocast on MPS)...")
-    torch_fp16 = run_pytorch(model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_compile=False, use_amp=True)
+    torch_fp16 = run_isolated("torch_train", "run_pytorch", model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_compile=False, use_amp=True)
 
     print("\n[B.2] Running JAX FP16 (jnp.float16)...")
-    jax_fp16 = run_jax(model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_fp16=True)
+    jax_fp16 = run_isolated("jax_train", "run_jax", model_type="cnn", dataset_name=dataset_name, epochs=epochs, batch_size=batch_size, use_fp16=True)
 
     # -------------------------------------------------------------
     # Summary Table A: Compiler Comparison
     # -------------------------------------------------------------
-    print("\n" + "=" * 80)
+    def calc_warmup(times):
+        if len(times) > 1:
+            return times[0] - float(np.median(times[1:]))
+        return 0.0
+
+    eager_warmup = calc_warmup(torch_eager["epoch_times"])
+    comp_warmup = calc_warmup(torch_compiled["epoch_times"])
+    jax_warmup = calc_warmup(jax_compiled["epoch_times"])
+
+    print("\n" + "=" * 105)
     print("EXPERIMENT A: COMPILER FACE-OFF SUMMARY")
-    print("=" * 80)
-    print(f"{'Engine':<25} | {'Warmup Ep 1 (s)':<18} | {'Steady-State (img/s)':<22} | {'Steady-State Speedup':<20}")
-    print("-" * 80)
+    print("=" * 105)
+    print(f"{'Engine':<25} | {'Warm-up cost (E1 − steady, s)':<30} | {'Steady-State (img/s)':<22} | {'Steady-State Speedup':<20}")
+    print("-" * 105)
     eager_tput = torch_eager["throughputs"][-1]
     comp_tput = torch_compiled["throughputs"][-1]
     jax_tput = jax_compiled["throughputs"][-1]
 
-    print(f"{'PyTorch Eager (MPS)':<25} | {torch_eager['epoch_times'][0]:<18.2f} | {eager_tput:<22.0f} | {'1.00x (baseline)':<20}")
-    print(f"{'PyTorch torch.compile':<25} | {torch_compiled['epoch_times'][0]:<18.2f} | {comp_tput:<22.0f} | {f'{comp_tput/eager_tput:.2f}x':<20}")
-    print(f"{'JAX @jax.jit (XLA)':<25} | {jax_compiled['epoch_times'][0]:<18.2f} | {jax_tput:<22.0f} | {f'{jax_tput/eager_tput:.2f}x':<20}")
+    print(f"{'PyTorch Eager (MPS)':<25} | {eager_warmup:<30.2f} | {eager_tput:<22.0f} | {'1.00x (baseline)':<20}")
+    print(f"{'PyTorch torch.compile':<25} | {comp_warmup:<30.2f} | {comp_tput:<22.0f} | {f'{comp_tput/eager_tput:.2f}x':<20}")
+    print(f"{'JAX @jax.jit (XLA)':<25} | {jax_warmup:<30.2f} | {jax_tput:<22.0f} | {f'{jax_tput/eager_tput:.2f}x':<20}")
 
     # -------------------------------------------------------------
     # Summary Table B: Precision & Memory Comparison
     # -------------------------------------------------------------
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 115)
     print("EXPERIMENT B: MIXED PRECISION & MEMORY FOOTPRINT SUMMARY")
-    print("=" * 80)
-    print(f"{'Configuration':<25} | {'Throughput (img/s)':<20} | {'Speedup':<12} | {'Peak GPU Memory (MB)':<20}")
-    print("-" * 80)
+    print("=" * 115)
+    print(f"{'Configuration':<25} | {'Throughput (img/s)':<20} | {'Speedup':<12} | {'Peak allocated in step (MB)':<30} | {'Resident state (MB)':<20}")
+    print("-" * 115)
     t_fp32_tput = torch_eager["throughputs"][-1]
     t_fp16_tput = torch_fp16["throughputs"][-1]
     j_fp32_tput = jax_compiled["throughputs"][-1]
     j_fp16_tput = jax_fp16["throughputs"][-1]
 
-    print(f"{'PyTorch FP32 (MPS)':<25} | {t_fp32_tput:<20.0f} | {'1.00x':<12} | {torch_eager['peak_mem_mb']:<20.1f}")
-    print(f"{'PyTorch FP16 AMP (MPS)':<25} | {t_fp16_tput:<20.0f} | {f'{t_fp16_tput/t_fp32_tput:.2f}x':<12} | {torch_fp16['peak_mem_mb']:<20.1f}")
-    print(f"{'JAX FP32 (XLA)':<25} | {j_fp32_tput:<20.0f} | {'1.00x':<12} | {'N/A (CPU RAM)':<20}")
-    print(f"{'JAX FP16 (XLA)':<25} | {j_fp16_tput:<20.0f} | {f'{j_fp16_tput/j_fp32_tput:.2f}x':<12} | {'N/A (CPU RAM)':<20}")
-    print("=" * 80)
+    print(f"{'PyTorch FP32 (MPS)':<25} | {t_fp32_tput:<20.0f} | {'1.00x':<12} | {torch_eager['peak_mem_mb']:<30.1f} | {torch_eager.get('resident_state_mb', 0.0):<20.1f}")
+    print(f"{'PyTorch FP16 AMP (MPS)':<25} | {t_fp16_tput:<20.0f} | {f'{t_fp16_tput/t_fp32_tput:.2f}x':<12} | {torch_fp16['peak_mem_mb']:<30.1f} | {torch_fp16.get('resident_state_mb', 0.0):<20.1f}")
+    print(f"{'JAX FP32 (XLA)':<25} | {j_fp32_tput:<20.0f} | {'1.00x':<12} | {'N/A (CPU RAM)':<30} | {'N/A (CPU RAM)':<20}")
+    print(f"{'JAX FP16 (XLA)':<25} | {j_fp16_tput:<20.0f} | {f'{j_fp16_tput/j_fp32_tput:.2f}x':<12} | {'N/A (CPU RAM)':<30} | {'N/A (CPU RAM)':<20}")
+    print("=" * 115)
 
     # -------------------------------------------------------------
     # Visualization: 2-Panel Diagnostic Chart

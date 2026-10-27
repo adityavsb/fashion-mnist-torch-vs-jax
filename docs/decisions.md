@@ -61,7 +61,7 @@ We implemented and tested FP16 mixed precision on the M4 Mac mini using:
 
 ### Empirical Findings & Trade-Off
 * **Result:** PyTorch FP16 on MPS achieved **$11,284\text{ img/s}$** compared to **$11,761\text{ img/s}$** on FP32—a **$4\%$ throughput degradation** ($0.96\times$).
-* **Root Cause:** The Deep CNN has a tiny footprint ($6.4\text{ MB}$ total parameter and activation memory). On the Apple M4's $120+\text{ GB/s}$ unified memory architecture, memory bandwidth is not saturated. The runtime overhead of dynamic type casting and loss scaling in `torch.autocast` slightly exceeds raw ALU savings on small architectures.
+* **Root Cause:** our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256. On the Apple M4's $120+\text{ GB/s}$ unified memory architecture, memory bandwidth is not saturated. `torch.autocast` inserts per-op dtype casts around each kernel; no `GradScaler` is used in this benchmark (loss scaling is not performed). On a 422k-parameter model the cast overhead is comparable to the arithmetic saved, so no net gain is expected; this is an observation, not a profiled root cause.
 * **Engineering Rationale:** We candidly document this negative result rather than suppressing it. FP16 on Apple Silicon provides massive leverage for memory-bound workloads (LLMs, large Vision Transformers), but should not be blindly enabled for lightweight convolutional models.
 
 ---

@@ -50,32 +50,32 @@ Tested on the Deep CNN architecture at batch size 256 for 3 epochs:
 
 #### Experiment A: The Compiler Face-Off (Eager vs. `torch.compile` vs. JAX)
 
-| Engine | Backend | Warmup Epoch 1 | Steady-State Throughput | Speedup vs Eager |
+| Engine | Backend | Warm-up cost (E1 − steady) | Steady-State Throughput | Speedup vs Eager |
 | :--- | :---: | :---: | :---: | :---: |
-| **PyTorch Eager** | Apple M4 MPS GPU | `5.87s` | `11,761 img/s` | `1.00x` (baseline) |
-| **PyTorch `torch.compile`** | Apple M4 MPS GPU | `5.86s` | **`13,167 img/s`** | **`1.12x` (+12% faster)** 🚀 |
-| **JAX `@jax.jit`** | XLA Compiled CPU | `9.52s` | `6,333 img/s` | `0.54x` |
+| **PyTorch Eager** | Apple M4 MPS GPU | `0.47s` | `15,864 img/s` | `1.00x` (baseline) |
+| **PyTorch `torch.compile`** | Apple M4 MPS GPU | `0.91s` | **`18,926 img/s`** | **`1.19x` (+19% faster)** 🚀 |
+| **JAX `@jax.jit`** | XLA Compiled CPU | `0.73s` | `7,602 img/s` | `0.48x` |
 
 #### Experiment B: Mixed Precision (FP32 vs. FP16 AMP) & Memory Footprint
 
-| Configuration | Throughput (img/s) | Speedup Factor | Peak GPU Memory Allocated |
-| :--- | :---: | :---: | :---: |
-| **PyTorch FP32 (MPS)** | `11,761 img/s` | `1.00x` | `6.4 MB` |
-| **PyTorch FP16 AMP (MPS)** | `11,284 img/s` | `0.96x` | `6.4 MB` |
-| **JAX FP32 (XLA)** | `6,333 img/s` | `1.00x` | *System RAM* |
-| **JAX FP16 (XLA)** | `6,674 img/s` | `1.05x` (+5.4%) | *System RAM* |
+| Configuration | Throughput (img/s) | Speedup Factor | Peak allocated during training step | Resident params+grads+Adam |
+| :--- | :---: | :---: | :---: | :---: |
+| **PyTorch FP32 (MPS)** | `15,864 img/s` | `1.00x` | `299.4 MB` | `6.4 MB` |
+| **PyTorch FP16 AMP (MPS)** | `15,029 img/s` | `0.95x` | `296.0 MB` | `6.4 MB` |
+| **JAX FP32 (XLA)** | `7,602 img/s` | `1.00x` | *System RAM* | *System RAM* |
+| **JAX FP16 (XLA)** | `7,452 img/s` | `0.98x` | *System RAM* | *System RAM* |
 
 ![Iteration 3 Benchmark](assets/benchmark_iteration3.png)
 
 > **Key Systems Takeaways from Iteration 3:**
-> 1. **`torch.compile` works on Apple Silicon MPS:** Compiling with TorchDynamo and the MPS backend delivers a **+12% steady-state throughput boost**, pushing training past **13,100 images/second** with virtually zero initial warmup penalty ($5.86$s vs $5.87$s).
-> 2. **FP16 on Small Models:** Because our CNN has a tiny footprint ($6.4$ MB of weights and activations), unified memory bandwidth is not the bottleneck. The overhead of software dynamic casting in `torch.autocast` slightly offsets ALU gains on smaller models. FP16 shines most when models exceed cache capacities (e.g. LLMs / ViTs).
+> 1. **`torch.compile` works on Apple Silicon MPS:** Compiling with TorchDynamo and the MPS backend delivers a **+19% steady-state throughput boost**, pushing training past **18,900 images/second** with a first-epoch compile cost of 0.91 s (eager warm-up 0.47 s), each measured in its own process.
+> 2. **FP16 on Small Models:** Because our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256, unified memory bandwidth is not the bottleneck. Per-op casting overhead in `torch.autocast` is comparable to the arithmetic saved on a model this small (no GradScaler is used). FP16 shines most when models exceed cache capacities (e.g. LLMs / ViTs).
 
 ---
 
 ### Iteration 2: Deep CNN & Batch Size Scaling (Heavy Compute)
 
-In this iteration, the workload was scaled to a compute-intensive **Deep Convolutional Neural Network (Conv2D $\rightarrow$ BatchNorm $\rightarrow$ ReLU $\rightarrow$ MaxPool $\times 2 \rightarrow$ Dense)** with a batch size sweep from $64$ to $512$ on Fashion-MNIST:
+In this iteration, the workload was scaled to a compute-intensive **Deep Convolutional Neural Network ((Conv2D → BatchNorm → ReLU → MaxPool) ×2 → Dense(128) → ReLU → Dense(10); 421,834 parameters)** with a batch size sweep from $64$ to $512$ on Fashion-MNIST:
 
 | Batch Size | PyTorch (M4 GPU via MPS) | JAX (Fused XLA `@jax.jit`) | Winner / Ratio |
 | :---: | :---: | :---: | :---: |
@@ -94,7 +94,7 @@ In this iteration, the workload was scaled to a compute-intensive **Deep Convolu
 
 ### Iteration 1: Lightweight MLP Baseline
 
-To establish a baseline, I first trained an identical 3-layer Multi-Layer Perceptron ($784 \rightarrow 256 \rightarrow 256 \rightarrow 10$) with the Adam optimizer ($lr=10^{-3}$) for 5 epochs:
+To establish a baseline, I first trained an identical 3-layer Multi-Layer Perceptron ($784 \rightarrow 256 \rightarrow 256 \rightarrow 10$) with the Adam optimizer ($lr=10^{-3}$), batch size 64, 5 epochs, PyTorch on MPS, JAX on XLA:CPU (full 60,000-image epochs; `drop_last` was not set in this iteration):
 
 | Metric | PyTorch (MPS GPU) | JAX (`@jax.jit`) | Advantage |
 | :--- | :--- | :--- | :--- |
@@ -113,43 +113,92 @@ Both models use mathematically equivalent initializations, loss formulations, an
 ### PyTorch (Stateful Object-Oriented + Compiler & AMP)
 ```python
 class SimpleCNN(nn.Module):
-    def __init__(self):
+    def __init__(self, in_channels=1, spatial_size=28, num_classes=10):
         super().__init__()
-        self.conv = nn.Conv2d(1, 32, 3, padding=1)
-        self.bn = nn.BatchNorm2d(32)
-        self.fc = nn.Linear(64 * 7 * 7, 10)
+        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.relu = nn.ReLU()
+        
+        pooled_dim = spatial_size // 4
+        flattened_size = 64 * pooled_dim * pooled_dim
+        
+        self.fc1 = nn.Linear(flattened_size, 128)
+        self.fc2 = nn.Linear(128, num_classes)
 
     def forward(self, x):
-        return self.fc(torch.flatten(F.relu(self.bn(self.conv(x))), 1))
+        x = self.pool(self.relu(self.bn1(self.conv1(x))))
+        x = self.pool(self.relu(self.bn2(self.conv2(x))))
+        x = torch.flatten(x, 1)
+        x = self.relu(self.fc1(x))
+        return self.fc2(x)
 
 # Optional compilation & mixed precision
-model = torch.compile(model.to("mps"))
-with torch.autocast(device_type="mps", dtype=torch.float16):
-    loss = criterion(model(images), labels)
-loss.backward()
-optimizer.step()
+        optimizer.zero_grad()
+        if use_amp and device.type == "mps":
+            with torch.autocast(device_type="mps", dtype=torch.float16):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+        else:
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+        if device.type == "mps":
+            step_mem = torch.mps.current_allocated_memory() / (1024 * 1024)
+            peak_step_mem = max(peak_step_mem, step_mem)
+
+        loss.backward()
+        optimizer.step()
 ```
 
 ### JAX / Flax (Pure Functional Transforms + XLA Compilation)
 ```python
 class SimpleCNN(nn.Module):
+    num_classes: int = 10
     dtype: any = jnp.float32
 
     @nn.compact
-    def __call__(self, x, train=True):
+    def __call__(self, x, train: bool = True):
+        x = x.astype(self.dtype)
+        # x is (B, H, W, C)
         x = nn.Conv(features=32, kernel_size=(3, 3), padding='SAME', dtype=self.dtype)(x)
         x = nn.BatchNorm(use_running_average=not train, dtype=self.dtype)(x)
-        return nn.Dense(features=10, dtype=self.dtype)(x.reshape((x.shape[0], -1)))
+        x = nn.relu(x)
+        x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
+
+        x = nn.Conv(features=64, kernel_size=(3, 3), padding='SAME', dtype=self.dtype)(x)
+        x = nn.BatchNorm(use_running_average=not train, dtype=self.dtype)(x)
+        x = nn.relu(x)
+        x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
+
+        x = x.reshape((x.shape[0], -1))
+        x = nn.Dense(features=128, dtype=self.dtype)(x)
+        x = nn.relu(x)
+        x = nn.Dense(features=self.num_classes, dtype=self.dtype)(x)
+        return x
 
 @jax.jit
-def train_step(state, x, y):
+def train_step(state, batch_x, batch_y):
     def loss_fn(params):
-        logits, updates = state.apply_fn({'params': params, 'batch_stats': state.batch_stats}, x, train=True, mutable=['batch_stats'])
-        loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
-        return loss, updates
-    (loss, updates), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+        logits, updates = state.apply_fn(
+            {"params": params, "batch_stats": state.batch_stats},
+            batch_x,
+            train=True,
+            mutable=["batch_stats"]
+        )
+        # Compute loss in float32 for numerical stability
+        logits_f32 = logits.astype(jnp.float32)
+        one_hot = jax.nn.one_hot(batch_y, 10)
+        loss = optax.softmax_cross_entropy(logits=logits_f32, labels=one_hot).mean()
+        return loss, (logits, updates)
+
+    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+    (loss, (logits, updates)), grads = grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
-    return state.replace(batch_stats=updates['batch_stats']), loss
+    state = state.replace(batch_stats=updates["batch_stats"])
+    return state, loss
 ```
 
 ---
@@ -202,7 +251,7 @@ python -c "from jax_train import run_jax; run_jax(model_type='cnn', use_fp16=Tru
 ## Summary Verdict on the M4 Mac Mini
 
 * **The M4 GPU is genuinely fast for compute-heavy workloads:** At batch size $128+$ on convolutional networks, Apple's Metal Performance Shaders deliver over **12,600 images/second**, running more than **$2\times$ faster** than CPU execution.
-* **`torch.compile` is ready on Apple Silicon:** Enabling `torch.compile` gave an immediate **+12% speedup**, pushing throughput past **13,100 images/second** with negligible compilation overhead.
+* **`torch.compile` is ready on Apple Silicon:** Enabling `torch.compile` gave an immediate **+19% speedup**, pushing throughput past **18,900 images/second** with an isolated first-epoch compilation cost of under one second.
 * **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or batch size is tiny ($\le 64$), GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
 * **Verdict:** The M4 Mac mini is a highly capable, silent, and power-efficient local deep learning testbench for rapid prototyping before scaling to cloud clusters.
 

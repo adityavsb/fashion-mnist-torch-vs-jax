@@ -10,10 +10,9 @@ Supports:
 """
 import time
 import torch
+import torch._dynamo
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
 
 class SimpleMLP(nn.Module):
     def __init__(self, in_features=784, hidden_dim=256, num_classes=10):
@@ -53,37 +52,54 @@ class SimpleCNN(nn.Module):
         x = self.relu(self.fc1(x))
         return self.fc2(x)
 
-def get_dataloaders(dataset_name="FashionMNIST", batch_size=64):
+def get_device_tensors(dataset_name="FashionMNIST", device="mps"):
+    """Load the whole dataset once as normalised float tensors on `device`.
+    Returns (train_x, train_y, test_x, test_y) with x in NCHW."""
     if dataset_name.lower() == "cifar10":
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))
-        ])
-        dataset_cls = datasets.CIFAR10
+        raise NotImplementedError("CIFAR-10 preloading not implemented; see T1.1 note.")
+    from torchvision import datasets
+    tr = datasets.FashionMNIST(root="./data", train=True, download=True)
+    te = datasets.FashionMNIST(root="./data", train=False, download=True)
+    def to_x(ds):
+        return ds.data.unsqueeze(1).float().div_(255.0).sub_(0.5).div_(0.5).to(device)
+    return to_x(tr), tr.targets.to(device), to_x(te), te.targets.to(device)
+
+def iterate_batches(x, y, batch_size, generator=None, drop_last=True):
+    n = x.shape[0]
+    if generator is not None:
+        perm = torch.randperm(n, generator=generator, device="cpu").to(x.device)
     else:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,))
-        ])
-        dataset_cls = datasets.FashionMNIST
+        perm = torch.arange(n, device=x.device)
+    stop = (n // batch_size) * batch_size if drop_last else n
+    for i in range(0, stop, batch_size):
+        idx = perm[i:i + batch_size]
+        yield x[idx], y[idx]
 
-    train_dataset = dataset_cls(root="./data", train=True, download=True, transform=transform)
-    test_dataset = dataset_cls(root="./data", train=False, download=True, transform=transform)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    return train_loader, test_loader
+def measure_input_pipeline(dataset_name="FashionMNIST", batch_size=256):
+    """Transparency timer: measures one pass of the old DataLoader pipeline."""
+    from torchvision import datasets, transforms
+    from torch.utils.data import DataLoader
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,))
+    ])
+    ds = datasets.FashionMNIST(root="./data", train=True, download=True, transform=transform)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=True)
+    t0 = time.perf_counter()
+    for _ in loader:
+        pass
+    return time.perf_counter() - t0
 
-def train_epoch(model, dataloader, optimizer, criterion, device, use_amp=False):
+def train_epoch(model, train_x, train_y, batch_size, optimizer, criterion, device, use_amp=False, generator=None):
     model.train()
     total_loss = 0.0
     correct = 0
     total = 0
-    
+    peak_step_mem = 0.0
+    if device.type == "mps":
+        torch.mps.synchronize()
     start_time = time.perf_counter()
-    for images, labels in dataloader:
-        images, labels = images.to(device), labels.to(device)
-        
+    for images, labels in iterate_batches(train_x, train_y, batch_size, generator=generator, drop_last=True):
         optimizer.zero_grad()
         if use_amp and device.type == "mps":
             with torch.autocast(device_type="mps", dtype=torch.float16):
@@ -92,29 +108,34 @@ def train_epoch(model, dataloader, optimizer, criterion, device, use_amp=False):
         else:
             outputs = model(images)
             loss = criterion(outputs, labels)
-            
+
+        if device.type == "mps":
+            step_mem = torch.mps.current_allocated_memory() / (1024 * 1024)
+            peak_step_mem = max(peak_step_mem, step_mem)
+
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item() * images.size(0)
         _, preds = outputs.max(1)
         correct += preds.eq(labels).sum().item()
         total += labels.size(0)
-        
+
+    if device.type == "mps":
+        torch.mps.synchronize()
     duration = time.perf_counter() - start_time
     epoch_loss = total_loss / total
     epoch_acc = (correct / total) * 100.0
     throughput = total / duration
-    return epoch_loss, epoch_acc, duration, throughput
+    return epoch_loss, epoch_acc, duration, throughput, peak_step_mem
 
 @torch.no_grad()
-def evaluate(model, dataloader, criterion, device, use_amp=False):
+def evaluate(model, test_x, test_y, criterion, device, batch_size=256, use_amp=False):
     model.eval()
     total_loss = 0.0
     correct = 0
     total = 0
-    for images, labels in dataloader:
-        images, labels = images.to(device), labels.to(device)
+    for images, labels in iterate_batches(test_x, test_y, batch_size, generator=None, drop_last=False):
         if use_amp and device.type == "mps":
             with torch.autocast(device_type="mps", dtype=torch.float16):
                 outputs = model(images)
@@ -122,7 +143,7 @@ def evaluate(model, dataloader, criterion, device, use_amp=False):
         else:
             outputs = model(images)
             loss = criterion(outputs, labels)
-            
+
         total_loss += loss.item() * images.size(0)
         _, preds = outputs.max(1)
         correct += preds.eq(labels).sum().item()
@@ -136,11 +157,12 @@ def run_pytorch(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_s
     print(f"[PyTorch] Device: {device} | Model: {model_type.upper()} | Mode: {compile_tag} | Precision: {precision_tag} | Batch: {batch_size}")
 
     torch.manual_seed(42)
-    train_loader, test_loader = get_dataloaders(dataset_name=dataset_name, batch_size=batch_size)
-    
+    train_x, train_y, test_x, test_y = get_device_tensors(dataset_name, device)
+    gen = torch.Generator().manual_seed(42)
+
     in_channels = 3 if dataset_name.lower() == "cifar10" else 1
     spatial_size = 32 if dataset_name.lower() == "cifar10" else 28
-    
+
     if model_type.lower() == "cnn":
         model = SimpleCNN(in_channels=in_channels, spatial_size=spatial_size, num_classes=10).to(device)
     else:
@@ -148,36 +170,48 @@ def run_pytorch(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_s
         model = SimpleMLP(in_features=in_features, num_classes=10).to(device)
 
     if use_compile:
-        try:
-            model = torch.compile(model)
-        except Exception as e:
-            print(f"Warning: torch.compile fallback to eager: {e}")
+        torch._dynamo.reset()
+        model = torch.compile(model)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     history = {
         "train_loss": [], "train_acc": [], "test_acc": [], 
-        "epoch_times": [], "throughputs": [], "peak_mem_mb": 0.0
+        "epoch_times": [], "throughputs": [], "peak_mem_mb": 0.0,
+        "resident_state_mb": 0.0, "driver_mem_mb": 0.0, "params_grads_adam_mb": 0.0,
+        "input_pipeline_s": 0.0
     }
+
+    # Record transparency timer once per run
+    history["input_pipeline_s"] = measure_input_pipeline(dataset_name=dataset_name, batch_size=batch_size)
 
     print(f"--- Starting PyTorch Training ({epochs} epochs) ---")
     for epoch in range(1, epochs + 1):
-        loss, acc, duration, throughput = train_epoch(model, train_loader, optimizer, criterion, device, use_amp=use_amp)
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device, use_amp=use_amp)
+        loss, acc, duration, throughput, peak_step_mem = train_epoch(
+            model, train_x, train_y, batch_size, optimizer, criterion, device, use_amp=use_amp, generator=gen
+        )
+        test_loss, test_acc = evaluate(model, test_x, test_y, criterion, device, batch_size=batch_size, use_amp=use_amp)
         history["train_loss"].append(loss)
         history["train_acc"].append(acc)
         history["test_acc"].append(test_acc)
         history["epoch_times"].append(duration)
         history["throughputs"].append(throughput)
-        
-        mem_mb = 0.0
-        if device.type == "mps" and hasattr(torch.mps, "current_allocated_memory"):
-            mem_mb = torch.mps.current_allocated_memory() / (1024 * 1024)
-            history["peak_mem_mb"] = max(history["peak_mem_mb"], mem_mb)
 
-        print(f"Epoch {epoch:02d}/{epochs:02d} | Train Loss: {loss:.4f} | Test Acc: {test_acc:.2f}% | Time: {duration:.2f}s ({throughput:.0f} img/s) | Mem: {mem_mb:.1f}MB")
-    
+        history["peak_mem_mb"] = max(history["peak_mem_mb"], peak_step_mem)
+        history["resident_state_mb"] = torch.mps.current_allocated_memory() / (1024 * 1024) if device.type == "mps" else 0.0
+        history["driver_mem_mb"] = torch.mps.driver_allocated_memory() / (1024 * 1024) if device.type == "mps" else 0.0
+        n_params = sum(p.numel() for p in model.parameters())
+        history["params_grads_adam_mb"] = n_params * 4 * 4 / (1024 * 1024)
+
+        print(f"Epoch {epoch:02d}/{epochs:02d} | Train Loss: {loss:.4f} | Test Acc: {test_acc:.2f}% | Time: {duration:.2f}s ({throughput:.0f} img/s) | Peak Step Mem: {history['peak_mem_mb']:.1f}MB | Resident: {history['resident_state_mb']:.1f}MB")
+
+    if use_compile:
+        stats = torch._dynamo.utils.counters["stats"]
+        history["compile_unique_graphs"] = int(stats.get("unique_graphs", 0))
+        history["compile_graph_breaks"] = int(sum(torch._dynamo.utils.counters["graph_break"].values()))
+        assert history["compile_unique_graphs"] > 0, "torch.compile did not capture any graph"
+
     return history
 
 if __name__ == "__main__":

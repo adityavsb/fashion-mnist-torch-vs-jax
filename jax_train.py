@@ -15,7 +15,6 @@ import jax.numpy as jnp
 from flax import linen as nn
 import optax
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
 from flax.training import train_state
 
 class CustomTrainState(train_state.TrainState):
@@ -61,26 +60,40 @@ class SimpleCNN(nn.Module):
         x = nn.Dense(features=self.num_classes, dtype=self.dtype)(x)
         return x
 
-def get_dataloaders(dataset_name="FashionMNIST", batch_size=64):
+def get_device_arrays(dataset_name="FashionMNIST", precision_dtype=jnp.float32):
+    """Load the whole dataset once as normalised float arrays on JAX device.
+    Returns (train_x, train_y, test_x, test_y) with x in NHWC."""
     if dataset_name.lower() == "cifar10":
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))
-        ])
-        dataset_cls = datasets.CIFAR10
-    else:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,))
-        ])
-        dataset_cls = datasets.FashionMNIST
+        raise NotImplementedError("CIFAR-10 preloading not implemented; see T1.1 note.")
+    from torchvision import datasets
+    tr = datasets.FashionMNIST(root="./data", train=True, download=True)
+    te = datasets.FashionMNIST(root="./data", train=False, download=True)
 
-    train_dataset = dataset_cls(root="./data", train=True, download=True, transform=transform)
-    test_dataset = dataset_cls(root="./data", train=False, download=True, transform=transform)
+    def to_x(ds):
+        arr = np.asarray(ds.data, dtype=np.float32)[..., None] / 255.0 * 2.0 - 1.0
+        return jnp.asarray(arr, dtype=precision_dtype)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    return train_loader, test_loader
+    train_x = to_x(tr)
+    train_y = jnp.asarray(np.asarray(tr.targets), dtype=jnp.int32)
+    test_x = to_x(te)
+    test_y = jnp.asarray(np.asarray(te.targets), dtype=jnp.int32)
+    return train_x, train_y, test_x, test_y
+
+def measure_input_pipeline(dataset_name="FashionMNIST", batch_size=256, precision_dtype=jnp.float32):
+    """Transparency timer: measures one pass of the old DataLoader pipeline with transpose."""
+    from torchvision import datasets, transforms
+    from torch.utils.data import DataLoader
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,))
+    ])
+    ds = datasets.FashionMNIST(root="./data", train=True, download=True, transform=transform)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=True)
+    t0 = time.perf_counter()
+    for images, labels in loader:
+        _ = jnp.array(images.numpy().transpose(0, 2, 3, 1), dtype=precision_dtype)
+        _ = jnp.array(labels.numpy())
+    return time.perf_counter() - t0
 
 @jax.jit
 def train_step(state, batch_x, batch_y):
@@ -117,18 +130,19 @@ def eval_step(state, batch_x, batch_y):
     acc = jnp.mean(preds == batch_y) * 100.0
     return loss, acc
 
-def evaluate(state, dataloader):
+def evaluate(state, test_x, test_y, batch_size=256):
     total_acc = 0.0
     total_loss = 0.0
     num_samples = 0
-    for images, labels in dataloader:
-        x = jnp.array(images.numpy().transpose(0, 2, 3, 1))
-        y = jnp.array(labels.numpy())
-        batch_size = x.shape[0]
+    n = test_x.shape[0]
+    for i in range(0, n, batch_size):
+        x = test_x[i:i + batch_size]
+        y = test_y[i:i + batch_size]
+        batch_size_cur = x.shape[0]
         loss, acc = eval_step(state, x, y)
-        total_loss += float(loss) * batch_size
-        total_acc += float(acc) * batch_size
-        num_samples += batch_size
+        total_loss += float(loss) * batch_size_cur
+        total_acc += float(acc) * batch_size_cur
+        num_samples += batch_size_cur
     return total_loss / num_samples, total_acc / num_samples
 
 def run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=128, lr=1e-3, use_fp16=False):
@@ -136,7 +150,7 @@ def run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=
     precision_tag = "FP16" if use_fp16 else "FP32"
     print(f"[JAX] Backend: {jax.default_backend()} | Model: {model_type.upper()} | Precision: {precision_tag} | Batch: {batch_size}")
 
-    train_loader, test_loader = get_dataloaders(dataset_name=dataset_name, batch_size=batch_size)
+    train_x, train_y, test_x, test_y = get_device_arrays(dataset_name, precision_dtype)
     in_channels = 3 if dataset_name.lower() == "cifar10" else 1
     spatial_size = 32 if dataset_name.lower() == "cifar10" else 28
 
@@ -157,27 +171,40 @@ def run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=
         batch_stats=batch_stats
     )
 
-    history = {"train_loss": [], "train_acc": [], "test_acc": [], "epoch_times": [], "throughputs": []}
+    history = {
+        "train_loss": [], "train_acc": [], "test_acc": [],
+        "epoch_times": [], "throughputs": [], "input_pipeline_s": 0.0
+    }
+
+    # Record transparency timer once per run
+    history["input_pipeline_s"] = measure_input_pipeline(dataset_name, batch_size, precision_dtype)
+
+    n_samples = train_x.shape[0]
+    stop = (n_samples // batch_size) * batch_size
 
     print(f"--- Starting JAX Training ({epochs} epochs) ---")
     for epoch in range(1, epochs + 1):
+        rng = np.random.default_rng(42 + epoch)
+        perm = rng.permutation(n_samples)
+
         start_time = time.perf_counter()
         epoch_losses = []
         total_samples = 0
-        
-        for images, labels in train_loader:
-            x = jnp.array(images.numpy().transpose(0, 2, 3, 1), dtype=precision_dtype)
-            y = jnp.array(labels.numpy())
+
+        for i in range(0, stop, batch_size):
+            batch_idx = perm[i:i + batch_size]
+            x = train_x[batch_idx]
+            y = train_y[batch_idx]
             state, loss = train_step(state, x, y)
             loss.block_until_ready()
             epoch_losses.append(float(loss))
             total_samples += x.shape[0]
-            
+
         duration = time.perf_counter() - start_time
         avg_train_loss = float(np.mean(epoch_losses))
         throughput = total_samples / duration
-        test_loss, test_acc = evaluate(state, test_loader)
-        
+        test_loss, test_acc = evaluate(state, test_x, test_y, batch_size=batch_size)
+
         history["train_loss"].append(avg_train_loss)
         history["test_acc"].append(test_acc)
         history["epoch_times"].append(duration)

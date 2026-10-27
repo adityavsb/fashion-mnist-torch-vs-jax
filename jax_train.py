@@ -20,6 +20,18 @@ from flax.training import train_state
 class CustomTrainState(train_state.TrainState):
     batch_stats: dict
 
+def torch_like_kernel_init():
+    # PyTorch nn.Linear/nn.Conv2d default: kaiming_uniform_(a=sqrt(5)) == U(-1/sqrt(fan_in), 1/sqrt(fan_in))
+    return nn.initializers.variance_scaling(scale=1.0 / 3.0, mode="fan_in", distribution="uniform")
+
+def torch_like_bias_init(fan_in):
+    bound = 1.0 / (fan_in ** 0.5)
+    def init(key, shape, dtype=jnp.float32):
+        return jax.random.uniform(key, shape, dtype, -bound, bound)
+    return init
+
+TORCH_BN_MOMENTUM_AS_FLAX = 0.9  # torch momentum 0.1 (weight on new batch) == flax momentum 0.9 (weight on running)
+
 class SimpleMLP(nn.Module):
     num_classes: int = 10
     hidden_dim: int = 256
@@ -29,11 +41,11 @@ class SimpleMLP(nn.Module):
     def __call__(self, x, train: bool = True):
         x = x.astype(self.dtype)
         x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype)(x)
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype, kernel_init=torch_like_kernel_init(), bias_init=torch_like_bias_init(784))(x)
         x = nn.relu(x)
-        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype)(x)
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype, kernel_init=torch_like_kernel_init(), bias_init=torch_like_bias_init(self.hidden_dim))(x)
         x = nn.relu(x)
-        x = nn.Dense(features=self.num_classes, dtype=self.dtype)(x)
+        x = nn.Dense(features=self.num_classes, dtype=self.dtype, kernel_init=torch_like_kernel_init(), bias_init=torch_like_bias_init(self.hidden_dim))(x)
         return x
 
 class SimpleCNN(nn.Module):
@@ -44,20 +56,20 @@ class SimpleCNN(nn.Module):
     def __call__(self, x, train: bool = True):
         x = x.astype(self.dtype)
         # x is (B, H, W, C)
-        x = nn.Conv(features=32, kernel_size=(3, 3), padding='SAME', dtype=self.dtype)(x)
-        x = nn.BatchNorm(use_running_average=not train, dtype=self.dtype)(x)
+        x = nn.Conv(features=32, kernel_size=(3, 3), padding='SAME', dtype=self.dtype, kernel_init=torch_like_kernel_init(), bias_init=torch_like_bias_init(1 * 9))(x)
+        x = nn.BatchNorm(use_running_average=not train, momentum=TORCH_BN_MOMENTUM_AS_FLAX, dtype=self.dtype)(x)
         x = nn.relu(x)
         x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
 
-        x = nn.Conv(features=64, kernel_size=(3, 3), padding='SAME', dtype=self.dtype)(x)
-        x = nn.BatchNorm(use_running_average=not train, dtype=self.dtype)(x)
+        x = nn.Conv(features=64, kernel_size=(3, 3), padding='SAME', dtype=self.dtype, kernel_init=torch_like_kernel_init(), bias_init=torch_like_bias_init(32 * 9))(x)
+        x = nn.BatchNorm(use_running_average=not train, momentum=TORCH_BN_MOMENTUM_AS_FLAX, dtype=self.dtype)(x)
         x = nn.relu(x)
         x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
 
         x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(features=128, dtype=self.dtype)(x)
+        x = nn.Dense(features=128, dtype=self.dtype, kernel_init=torch_like_kernel_init(), bias_init=torch_like_bias_init(64 * 7 * 7))(x)
         x = nn.relu(x)
-        x = nn.Dense(features=self.num_classes, dtype=self.dtype)(x)
+        x = nn.Dense(features=self.num_classes, dtype=self.dtype, kernel_init=torch_like_kernel_init(), bias_init=torch_like_bias_init(128))(x)
         return x
 
 def get_device_arrays(dataset_name="FashionMNIST", precision_dtype=jnp.float32):

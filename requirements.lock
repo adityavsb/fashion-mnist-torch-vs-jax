@@ -1,0 +1,18 @@
+# Pinned dependency lockfile for fashion-mnist-torch-vs-jax
+torch==2.14.1
+torchvision==0.29.1
+jax==0.12.0
+jaxlib==0.12.0
+flax==0.12.10
+optax==0.2.8
+numpy==2.5.4
+matplotlib==3.11.2
+pillow==13.0.0
+ml_dtypes==0.6.0
+msgpack==1.2.3
+typing_extensions==4.16.0
+filelock==4.2.4
+fsspec==2026.9.0
+networkx==3.7
+Jinja2==3.1.6
+sympy==1.14.0

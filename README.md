@@ -9,7 +9,7 @@
 An empirical hobby project testing the real-world deep learning performance and GPU acceleration of the **Apple M4 Mac mini**, comparing **PyTorch (Metal Performance Shaders / MPS)** against **JAX (XLA JIT compiler)** across three incremental iterations:
 
 1. **Iteration 1 (Baseline):** Lightweight MLP & kernel dispatch latency.
-2. **Iteration 2 (Scaling):** Deep CNN & batch size throughput sweep (64 to 512).
+2. **Iteration 2 (Scaling):** Two-layer CNN & batch size throughput sweep (64 to 512).
 3. **Iteration 3 (Advanced Optimization):** Graph compilation (`torch.compile` vs. `@jax.jit`) and mixed precision (FP32 vs. FP16 AMP) with unified memory profiling.
 
 ---
@@ -46,49 +46,55 @@ JAX Backend:         jax 0.12.0 / flax 0.12.10 (XLA CPU Vectorized)
 
 ### Iteration 3: Compilers (`torch.compile`) & Mixed Precision (FP16)
 
-Tested on the Deep CNN architecture at batch size 256 for 3 epochs:
+Tested on the two-layer CNN architecture (421,834 parameters) at batch size 256 for 3 epochs:
 
 #### Experiment A: The Compiler Face-Off (Eager vs. `torch.compile` vs. JAX)
 
 | Engine | Backend | Warm-up cost (E1 − steady) | Steady-State Throughput | Speedup vs Eager |
 | :--- | :---: | :---: | :---: | :---: |
-| **PyTorch Eager** | Apple M4 MPS GPU | `0.47s` | `15,864 img/s` | `1.00x` (baseline) |
-| **PyTorch `torch.compile`** | Apple M4 MPS GPU | `0.91s` | **`18,926 img/s`** | **`1.19x` (+19% faster)** 🚀 |
-| **JAX `@jax.jit`** | XLA Compiled CPU | `0.73s` | `7,602 img/s` | `0.48x` |
+| **PyTorch Eager** | Apple M4 MPS GPU | `-0.95s` | `10,537 [3,461–15,252] img/s` | `1.0x` (baseline) |
+| **PyTorch `torch.compile`** | Apple M4 MPS GPU | `1.05s` | `6,814 [6,600–11,663] img/s` | `0.65x` |
+| **JAX `@jax.jit`** | XLA Compiled CPU | `0.35s` | `6,967 [5,280–7,527] img/s` | `0.66x` |
+
+Each cell is the median of 5 independent processes (3 epochs each; steady state = epoch 3). Range in brackets.
 
 #### Experiment B: Mixed Precision (FP32 vs. FP16 AMP) & Memory Footprint
 
-| Configuration | Throughput (img/s) | Speedup Factor | Peak allocated during training step | Resident params+grads+Adam |
+| Configuration | Steady-State Throughput (img/s) | Speedup Factor | Peak allocated during training step | Resident params+grads+Adam |
 | :--- | :---: | :---: | :---: | :---: |
-| **PyTorch FP32 (MPS)** | `15,864 img/s` | `1.00x` | `299.4 MB` | `6.4 MB` |
-| **PyTorch FP16 AMP (MPS)** | `15,029 img/s` | `0.95x` | `296.0 MB` | `6.4 MB` |
-| **JAX FP32 (XLA)** | `7,602 img/s` | `1.00x` | *System RAM* | *System RAM* |
-| **JAX FP16 (XLA)** | `7,452 img/s` | `0.98x` | *System RAM* | *System RAM* |
+| **PyTorch FP32 (MPS)** | `10,537 [3,461–15,252] img/s` | `1.0x` | `299.4 MB` | `6.4 MB` |
+| **PyTorch FP16 AMP (MPS)** | `14,741 [14,073–15,386] img/s` | `1.4x` | `296.0 MB` | `6.4 MB` |
+| **JAX FP32 (XLA)** | `6,967 [5,280–7,527] img/s` | `1.0x` | *System RAM* | *System RAM* |
+| **JAX FP16 (XLA)** | `7,652 [7,565–7,701] img/s` | `1.1x` | *System RAM* | *System RAM* |
+
+Each cell is the median of 5 independent processes (3 epochs each; steady state = epoch 3). Range in brackets.
 
 ![Iteration 3 Benchmark](assets/benchmark_iteration3.png)
 
 > **Key Systems Takeaways from Iteration 3:**
-> 1. **`torch.compile` works on Apple Silicon MPS:** Compiling with TorchDynamo and the MPS backend delivers a **+19% steady-state throughput boost**, pushing training past **18,900 images/second** with a first-epoch compile cost of 0.91 s (eager warm-up 0.47 s), each measured in its own process.
-> 2. **FP16 on Small Models:** Because our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256, unified memory bandwidth is not the bottleneck. Per-op casting overhead in `torch.autocast` is comparable to the arithmetic saved on a model this small (no GradScaler is used). FP16 shines most when models exceed cache capacities (e.g. LLMs / ViTs).
+> 1. **`torch.compile` on Apple Silicon MPS:** In isolated multi-process evaluations, `torch.compile` on MPS exhibited significant launch variance (steady-state median `6,814 [6,600–11,663] img/s`) with an initial compile warm-up cost of 1.05 s. PyTorch FP16 AMP achieved the highest steady throughput at `14,741 [14,073–15,386] img/s` (+40% over eager median).
+> 2. **FP16 on Small Models:** Because our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256, unified memory bandwidth is not the bottleneck. JAX FP16 (`7,652 [7,565–7,701] img/s` vs FP32 `6,967 [5,280–7,527] img/s`) is within run-to-run variation (no measurable effect). PyTorch FP16 AMP avoids VRAM bloat (296.0 MB peak vs 299.4 MB FP32) and accelerates convolution execution on the GPU.
 
 ---
 
-### Iteration 2: Deep CNN & Batch Size Scaling (Heavy Compute)
+### Iteration 2: Two-layer CNN & Batch Size Scaling
 
-In this iteration, the workload was scaled to a compute-intensive **Deep Convolutional Neural Network ((Conv2D → BatchNorm → ReLU → MaxPool) ×2 → Dense(128) → ReLU → Dense(10); 421,834 parameters)** with a batch size sweep from $64$ to $512$ on Fashion-MNIST:
+In this iteration, the workload was evaluated on a two-convolution CNN (421,834 parameters: (Conv2D → BatchNorm → ReLU → MaxPool) ×2 → Dense(128) → ReLU → Dense(10)) with a batch size sweep from $64$ to $512$ on Fashion-MNIST:
 
 | Batch Size | PyTorch (M4 GPU via MPS) | JAX (Fused XLA `@jax.jit`) | Winner / Ratio |
 | :---: | :---: | :---: | :---: |
-| **64** | `5,392 img/s` | **`7,908 img/s`** | **JAX is 1.47x faster** ⚡ (low dispatch overhead) |
-| **128** | **`10,418 img/s`** | `7,173 img/s` | **PyTorch GPU is 1.45x faster** |
-| **256** | **`11,584 img/s`** | `6,706 img/s` | **PyTorch GPU is 1.73x faster** |
-| **512** | **`12,606 img/s`** | `6,012 img/s` | **PyTorch GPU is 2.10x faster** 🚀 |
+| **64** | `6,953 [6,643–7,567] img/s` | **`8,739 [8,558–8,972] img/s`** | **JAX is 1.3x faster** ⚡ (low dispatch overhead) |
+| **128** | **`13,839 [13,238–14,377] img/s`** | `8,008 [6,990–8,068] img/s` | **PyTorch GPU is 1.7x faster** |
+| **256** | **`16,473 [15,935–16,483] img/s`** | `7,683 [6,920–7,715] img/s` | **PyTorch GPU is 2.1x faster** |
+| **512** | **`16,638 [15,366–17,180] img/s`** | `6,666 [6,401–6,849] img/s` | **PyTorch GPU is 2.5x faster** 🚀 |
+
+Each cell is the median of 5 independent processes (2 epochs each; steady state = epoch 2). Range in brackets.
 
 ![Scaling Benchmark Comparison](assets/benchmark_scaling.png)
 
 #### The GPU Crossover Point:
-* **Small Batches ($\le 64$):** GPU kernel dispatch latency over Metal command buffers throttles the GPU. JAX's `@jax.jit` wins because it fuses operations into a single kernel executing within the Apple M4's low-latency CPU cache.
-* **Large Batches ($\ge 128$):** The compute volume fully saturates the M4 GPU's parallel SIMD execution units. PyTorch on MPS scales from **$5,392$ to $12,606$ images/sec** ($2.34\times$ throughput scaling), outperforming compiled CPU execution by more than **$2.1\times$**.
+* **Small Batches ($\le 64$):** GPU kernel dispatch latency over Metal command buffers throttles the GPU. JAX's `@jax.jit` wins because it fuses the step into a small number of XLA computations with no Metal command-buffer round-trips; per-step fixed overhead, not arithmetic, dominates at this batch size.
+* **Large Batches ($\ge 128$):** Per-batch fixed costs are amortised over more images; GPU utilisation was not profiled. PyTorch on MPS scales from **6,953 to 16,638 images/sec** ($2.4\times$ throughput scaling), outperforming compiled CPU execution by **$2.5\times$** at batch size 512.
 
 ---
 
@@ -98,9 +104,12 @@ To establish a baseline, I first trained an identical 3-layer Multi-Layer Percep
 
 | Metric | PyTorch (MPS GPU) | JAX (`@jax.jit`) | Advantage |
 | :--- | :--- | :--- | :--- |
-| **Final Train Loss** | `0.2828` | `0.2819` | Numerical Parity ($\Delta = 0.0009$) |
-| **Final Test Accuracy** | `87.72%` | `88.02%` | Numerical Parity |
-| **Average Time / Epoch** | `3.58s` | `1.69s` | **JAX is 2.11x faster** |
+| **Final Train Loss** | `0.2810` | `0.2821` | Numerical Parity ($\Delta = 0.0011$) |
+| **Final Test Accuracy** | `87.82%` | `87.21%` | Numerical Parity |
+| **Average Time / Epoch** | `1.48s` | `0.62s` | **JAX is 2.4x faster** |
+| **Steady-State Throughput** | `46,329 [26,851–46,517] img/s` | `106,214 [81,042–110,169] img/s` | **JAX is 2.3x faster** |
+
+Each cell is the median of 5 independent processes (5 epochs each; steady state = epoch 5). Range in brackets.
 
 ![MLP Benchmark Comparison](assets/benchmark_results.png)
 
@@ -108,7 +117,7 @@ To establish a baseline, I first trained an identical 3-layer Multi-Layer Percep
 
 ## Architectural Parity: PyTorch vs JAX
 
-Both models use mathematically equivalent initializations, loss formulations, and hyperparameters.
+Both models use the same architecture, loss, optimiser and learning rate. Initialisation and BatchNorm momentum are made equivalent explicitly in `jax_train.py` (PyTorch's defaults are U(±1/√fan_in) weights and biases and a 0.1 running-stat momentum; Flax's are LeCun-normal weights, zero biases and 0.99 momentum, so library defaults are **not** equivalent).
 
 ### PyTorch (Stateful Object-Oriented + Compiler & AMP)
 ```python
@@ -229,8 +238,10 @@ python device_check.py
 ### 3. Run Benchmark Suites
 
 ```bash
-# Run Iteration 3: Compilers (torch.compile vs JAX JIT) & FP16 Mixed Precision
-python benchmark.py
+# Run all benchmark suites across iterations (regenerating plots and results/*.json)
+python benchmark_iter1_mlp.py          # Iteration 1: MLP baseline (regenerates assets/benchmark_results.png)
+python benchmark_iter2_scaling.py      # Iteration 2: CNN batch-size sweep (assets/benchmark_scaling.png)
+python benchmark_iter3_compile_amp.py  # Iteration 3: torch.compile vs jax.jit, FP16 (assets/benchmark_iteration3.png)
 ```
 
 ### 4. Run Individual Implementations
@@ -250,8 +261,8 @@ python -c "from jax_train import run_jax; run_jax(model_type='cnn', use_fp16=Tru
 
 ## Summary Verdict on the M4 Mac Mini
 
-* **The M4 GPU is genuinely fast for compute-heavy workloads:** At batch size $128+$ on convolutional networks, Apple's Metal Performance Shaders deliver over **12,600 images/second**, running more than **$2\times$ faster** than CPU execution.
-* **`torch.compile` is ready on Apple Silicon:** Enabling `torch.compile` gave an immediate **+19% speedup**, pushing throughput past **18,900 images/second** with an isolated first-epoch compilation cost of under one second.
+* **The M4 GPU is fast for batch-scaled workloads:** At batch size $128+$ on convolutional networks, Apple's Metal Performance Shaders deliver over **13,800 images/second**, running more than **$1.7\times$ faster** than CPU execution.
+* **Compilers and precision on Apple Silicon:** `torch.compile` on MPS shows run-to-run variance across fresh process launches, while FP16 AMP delivers a solid **1.4x** speedup reaching **14,700+ images/second** on the 422k-parameter CNN.
 * **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or batch size is tiny ($\le 64$), GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
 * **Verdict:** The M4 Mac mini is a highly capable, silent, and power-efficient local deep learning testbench for rapid prototyping before scaling to cloud clusters.
 

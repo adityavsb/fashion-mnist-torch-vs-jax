@@ -1,0 +1,18 @@
+============================================================
+Platform: Darwin (arm64)
+Python:   3.13.6
+============================================================
+
+[1] Checking PyTorch...
+  PyTorch Version: 2.14.1
+  MPS (Metal Performance Shaders) Built:     True
+  MPS Available for Acceleration:            True
+  Successfully allocated tensor on GPU:     mps:0
+
+[2] Checking JAX...
+  JAX Version: 0.12.0
+  Default Backend: cpu
+  Available Devices: [CpuDevice(id=0)]
+  Successfully created JAX array:            device={CpuDevice(id=0)}
+
+============================================================

@@ -1,0 +1,65 @@
+================================================================================
+ITERATION 3: COMPILERS & MIXED PRECISION BENCHMARK (Apple M4 Mac Mini)
+Dataset: FashionMNIST | Architecture: Deep CNN | Batch Size: 256
+================================================================================
+
+>>> Experiment A: Compiler Face-Off (Warmup vs Steady-State) <<<
+
+[A.1] Running PyTorch Eager (MPS)...
+[PyTorch] Device: mps | Model: CNN | Mode: Eager | Precision: FP32 | Batch: 256
+--- Starting PyTorch Training (3 epochs) ---
+Epoch 01/03 | Train Loss: 0.4188 | Test Acc: 88.22% | Time: 4.34s (13814 img/s) | Peak Step Mem: 299.4MB | Resident: 217.0MB
+Epoch 02/03 | Train Loss: 0.2714 | Test Acc: 89.46% | Time: 3.78s (15842 img/s) | Peak Step Mem: 299.4MB | Resident: 217.0MB
+Epoch 03/03 | Train Loss: 0.2302 | Test Acc: 90.69% | Time: 3.93s (15246 img/s) | Peak Step Mem: 299.4MB | Resident: 217.0MB
+
+[A.2] Running PyTorch torch.compile (MPS)...
+[PyTorch] Device: mps | Model: CNN | Mode: torch.compile | Precision: FP32 | Batch: 256
+--- Starting PyTorch Training (3 epochs) ---
+Epoch 01/03 | Train Loss: 0.4193 | Test Acc: 87.57% | Time: 5.27s (11368 img/s) | Peak Step Mem: 299.4MB | Resident: 217.0MB
+Epoch 02/03 | Train Loss: 0.2704 | Test Acc: 89.50% | Time: 3.12s (19206 img/s) | Peak Step Mem: 299.4MB | Resident: 217.0MB
+Epoch 03/03 | Train Loss: 0.2311 | Test Acc: 90.44% | Time: 5.21s (11509 img/s) | Peak Step Mem: 299.4MB | Resident: 217.0MB
+
+[A.3] Running JAX @jax.jit (XLA)...
+[JAX] Backend: cpu | Model: CNN | Precision: FP32 | Batch: 256
+--- Starting JAX Training (3 epochs) ---
+Epoch 01/03 | Train Loss: 0.4212 | Test Acc: 89.00% | Time: 8.72s (6872 img/s)
+Epoch 02/03 | Train Loss: 0.2774 | Test Acc: 90.23% | Time: 8.81s (6803 img/s)
+Epoch 03/03 | Train Loss: 0.2329 | Test Acc: 89.99% | Time: 8.83s (6782 img/s)
+
+>>> Experiment B: Mixed Precision FP16 (AMP) & Memory Allocation <<<
+
+[B.1] Running PyTorch FP16 (autocast on MPS)...
+[PyTorch] Device: mps | Model: CNN | Mode: Eager | Precision: FP16 (AMP) | Batch: 256
+--- Starting PyTorch Training (3 epochs) ---
+Epoch 01/03 | Train Loss: 0.4207 | Test Acc: 87.64% | Time: 4.15s (14423 img/s) | Peak Step Mem: 296.0MB | Resident: 217.0MB
+Epoch 02/03 | Train Loss: 0.2720 | Test Acc: 89.51% | Time: 4.10s (14628 img/s) | Peak Step Mem: 296.0MB | Resident: 217.0MB
+Epoch 03/03 | Train Loss: 0.2310 | Test Acc: 90.46% | Time: 4.09s (14661 img/s) | Peak Step Mem: 296.0MB | Resident: 217.0MB
+
+[B.2] Running JAX FP16 (jnp.float16)...
+[JAX] Backend: cpu | Model: CNN | Precision: FP16 compute (FP32 params) | Batch: 256
+--- Starting JAX Training (3 epochs) ---
+Epoch 01/03 | Train Loss: 0.4213 | Test Acc: 88.92% | Time: 9.26s (6472 img/s)
+Epoch 02/03 | Train Loss: 0.2771 | Test Acc: 90.04% | Time: 9.20s (6509 img/s)
+Epoch 03/03 | Train Loss: 0.2338 | Test Acc: 89.57% | Time: 8.76s (6838 img/s)
+
+================================================================================
+EXPERIMENT A: COMPILER FACE-OFF SUMMARY
+================================================================================
+Engine                    | Warmup Ep 1 (s)    | Steady-State (img/s)   | Steady-State Speedup
+--------------------------------------------------------------------------------
+PyTorch Eager (MPS)       | 4.34               | 15246                  | 1.00x (baseline)    
+PyTorch torch.compile     | 5.27               | 11509                  | 0.75x               
+JAX @jax.jit (XLA)        | 8.72               | 6782                   | 0.44x               
+
+================================================================================
+EXPERIMENT B: MIXED PRECISION & MEMORY FOOTPRINT SUMMARY
+================================================================================
+Configuration             | Throughput (img/s)   | Speedup      | Peak GPU Memory (MB)
+--------------------------------------------------------------------------------
+PyTorch FP32 (MPS)        | 15246                | 1.00x        | 299.4               
+PyTorch FP16 AMP (MPS)    | 14661                | 0.96x        | 296.0               
+JAX FP32 (XLA)            | 6782                 | 1.00x        | N/A (CPU RAM)       
+JAX FP16 (XLA)            | 6838                 | 1.01x        | N/A (CPU RAM)       
+================================================================================
+
+[✓] Iteration 3 plot saved to: /Users/diabolixw/Downloads/claude_code/pytorch_vs_jax/fashion-mnist-torch-vs-jax/assets/benchmark_iteration3.png

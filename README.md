@@ -257,6 +257,10 @@ python -c "from torch_train import run_pytorch; run_pytorch(model_type='cnn', us
 python -c "from jax_train import run_jax; run_jax(model_type='cnn', use_fp16=True, batch_size=256)"
 ```
 
+## What I learned
+
+Running this benchmark showed me how misleading headline numbers can be when small models meet modern compilers. What surprised me most was `torch.compile` on Apple Silicon MPS: in `results/iteration3_2026-10-27.json`, steady-state throughput varied from 6,600 to 11,663 img/s across fresh process launches, whereas PyTorch FP16 AMP consistently achieved 14,741 img/s without compilation overhead. If I were doing this again, I would profile the GPU command buffer submission latency directly in Apple Instruments and log continuous power draw via `powermetrics` to see whether thermal throttling or kernel dispatch latency was driving the variance.
+
 ---
 
 ## Limitations

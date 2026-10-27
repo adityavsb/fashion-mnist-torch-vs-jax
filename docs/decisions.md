@@ -41,7 +41,7 @@ We chose **Fashion-MNIST** ($28 \times 28$ grayscale images, 60,000 samples, 10 
 
 ### Consequences
 * Eliminates disk throughput and image decoding jitter completely.
-* Ensures $100\%$ of measured epoch time reflects raw tensor arithmetic, kernel dispatch latency, memory bandwidth, and compiler execution efficiency.
+* The timed region contains only device-side training steps on preloaded tensors; the input pipeline is timed separately and reported.
 * Allows seamless, reproducible benchmarking without multi-gigabyte dataset downloads.
 
 ---
@@ -62,7 +62,7 @@ We implemented and tested FP16 mixed precision on the M4 Mac mini using:
 ### Empirical Findings & Trade-Off
 * **Result:** PyTorch FP16 on MPS achieved **$11,284\text{ img/s}$** compared to **$11,761\text{ img/s}$** on FP32—a **$4\%$ throughput degradation** ($0.96\times$).
 * **Root Cause:** our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256. On the Apple M4's $120\text{ GB/s}$ unified memory architecture, memory bandwidth is not saturated. `torch.autocast` inserts per-op dtype casts around each kernel; no `GradScaler` is used in this benchmark (loss scaling is not performed). On a 422k-parameter model the cast overhead is comparable to the arithmetic saved, so no net gain is expected; this is an observation, not a profiled root cause.
-* **Engineering Rationale:** We candidly document this negative result rather than suppressing it. FP16 on Apple Silicon provides massive leverage for memory-bound workloads (LLMs, large Vision Transformers), but should not be blindly enabled for lightweight convolutional models.
+* **Engineering Rationale:** The FP16 result is reported as measured. FP16 on Apple Silicon provides massive leverage for memory-bound workloads (LLMs, large Vision Transformers), but should not be blindly enabled for lightweight convolutional models.
 
 ---
 
@@ -82,5 +82,5 @@ We evaluated:
 2. Steady-state throughput across epochs 2–3.
 
 ### Consequences
-* `torch.compile` on Apple Silicon MPS delivers a genuine **$+12\%$ steady-state throughput gain** ($13,167\text{ img/s}$ vs. $11,761\text{ img/s}$) with negligible initial compilation penalty ($5.86\text{s}$ vs. $5.87\text{s}$ for the first epoch).
-* Shows that graph capture and kernel fusion on Apple Silicon are now viable for production PyTorch codebases.
+* In isolated multi-process benchmarks ($N=5$), `torch.compile` on Apple Silicon MPS exhibits significant launch variance (steady-state median $6,814\text{ img/s}$, range $6,600–11,663\text{ img/s}$) with an initial compilation warmup penalty of $1.05\text{s}$.
+* Shows that `torch.compile` captures and accelerates this small CNN on MPS without graph breaks; larger models were not tested.

@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.14%20(MPS%20Accelerated)-EE4C2C.svg)](https://pytorch.org/)
 [![JAX](https://img.shields.io/badge/JAX-0.12%20(XLA%20Compiled)-008080.svg)](https://jax.readthedocs.io/)
-[![Hardware](https://img.shields.io/badge/Hardware-Apple%20M4%20Mac%20mini-black.svg)]()
+[![Hardware](https://img.shields.io/badge/Hardware-Apple%20M4%20Mac%20mini-black.svg)](https://support.apple.com/en-us/121555)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An empirical hobby project testing the real-world deep learning performance and GPU acceleration of the **Apple M4 Mac mini**, comparing **PyTorch (Metal Performance Shaders / MPS)** against **JAX (XLA JIT compiler)** across three incremental iterations:
@@ -18,7 +18,7 @@ An empirical hobby project testing the real-world deep learning performance and 
 
 Apple's launch of the **M4 Mac mini** came with significant claims about massive GPU gains, unified memory bandwidth, and on-device machine learning acceleration. 
 
-As a practitioner, I wanted to see past the marketing announcements and run an **honest, empirical benchmark** on my own desk:
+As a practitioner, I wanted to see past the marketing announcements, measure performance on my own desk, and write down exactly what was measured:
 * *Does Apple's Metal Performance Shaders (MPS) backend actually deliver tangible GPU speedups for everyday deep learning tasks?*
 * *How does PyTorch's new `torch.compile` Inductor backend perform on Apple Silicon compared to eager PyTorch and JAX's mature XLA compiler?*
 * *Does half-precision FP16 mixed precision yield throughput and memory benefits on unified memory?*
@@ -259,12 +259,24 @@ python -c "from jax_train import run_jax; run_jax(model_type='cnn', use_fp16=Tru
 
 ---
 
+## Limitations
+
+- **One machine, one chip.** All numbers are from a single Mac mini (M4, 16 GB). Thermal state and background load were not controlled.
+- **N = 5 per configuration** (median and range reported). Differences smaller than the reported range should be read as "no measurable difference".
+- **GPU vs CPU, not GPU vs GPU.** JAX runs on XLA:CPU because `jax-metal` is not maintained for current JAX. The PyTorch/JAX ratio therefore mixes a hardware difference with a framework difference.
+- **Small model.** A 421,834-parameter, two-convolution CNN on 28×28 images. Conclusions about `torch.compile` or FP16 do not transfer to large models without re-measurement.
+- **Memory column** reports peak allocation sampled between forward and backward, not driver-level or OS-level memory.
+- **Accuracy** is reported for the Iteration 1 MLP only; Iterations 2–3 measure throughput.
+- **CIFAR-10** code paths exist but were not benchmarked.
+
+---
+
 ## Summary Verdict on the M4 Mac Mini
 
 * **The M4 GPU is fast for batch-scaled workloads:** At batch size $128+$ on convolutional networks, Apple's Metal Performance Shaders deliver over **13,800 images/second**, running more than **$1.7\times$ faster** than CPU execution.
 * **Compilers and precision on Apple Silicon:** `torch.compile` on MPS shows run-to-run variance across fresh process launches, while FP16 AMP delivers a solid **1.4x** speedup reaching **14,700+ images/second** on the 422k-parameter CNN.
 * **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or batch size is tiny ($\le 64$), GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
-* **Verdict:** The M4 Mac mini is a highly capable, silent, and power-efficient local deep learning testbench for rapid prototyping before scaling to cloud clusters.
+* **Verdict:** The M4 Mac mini is a capable local testbench for small-model prototyping before scaling to cloud hardware.
 
 ---
 

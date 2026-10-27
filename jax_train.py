@@ -159,7 +159,7 @@ def evaluate(state, test_x, test_y, batch_size=256):
 
 def run_jax(model_type="cnn", dataset_name="FashionMNIST", epochs=5, batch_size=128, lr=1e-3, use_fp16=False):
     precision_dtype = jnp.float16 if use_fp16 else jnp.float32
-    precision_tag = "FP16" if use_fp16 else "FP32"
+    precision_tag = "FP16 compute (FP32 params)" if use_fp16 else "FP32"
     print(f"[JAX] Backend: {jax.default_backend()} | Model: {model_type.upper()} | Precision: {precision_tag} | Batch: {batch_size}")
 
     train_x, train_y, test_x, test_y = get_device_arrays(dataset_name, precision_dtype)

@@ -65,7 +65,7 @@ Each cell is the median of 5 independent processes (3 epochs each; steady state 
 | **PyTorch FP32 (MPS)** | `10,537 [3,461–15,252] img/s` | `1.0x` | `299.4 MB` | `6.4 MB` |
 | **PyTorch FP16 AMP (MPS)** | `14,741 [14,073–15,386] img/s` | `1.4x` | `296.0 MB` | `6.4 MB` |
 | **JAX FP32 (XLA)** | `6,967 [5,280–7,527] img/s` | `1.0x` | *System RAM* | *System RAM* |
-| **JAX FP16 (XLA)** | `7,652 [7,565–7,701] img/s` | `1.1x` | *System RAM* | *System RAM* |
+| **JAX FP16 compute / FP32 params (XLA:CPU)** | `7,652 [7,565–7,701] img/s` | `1.1x` | *System RAM* | *System RAM* |
 
 Each cell is the median of 5 independent processes (3 epochs each; steady state = epoch 3). Range in brackets.
 
@@ -265,6 +265,16 @@ python -c "from jax_train import run_jax; run_jax(model_type='cnn', use_fp16=Tru
 * **Compilers and precision on Apple Silicon:** `torch.compile` on MPS shows run-to-run variance across fresh process launches, while FP16 AMP delivers a solid **1.4x** speedup reaching **14,700+ images/second** on the 422k-parameter CNN.
 * **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or batch size is tiny ($\le 64$), GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
 * **Verdict:** The M4 Mac mini is a highly capable, silent, and power-efficient local deep learning testbench for rapid prototyping before scaling to cloud clusters.
+
+---
+
+## References
+
+- Xiao, H., Rasul, K., Vollgraf, R. (2017). Fashion-MNIST: a Novel Image Dataset for Benchmarking Machine Learning Algorithms. arXiv:1708.07747. Dataset © 2017 Zalando SE, MIT License — https://github.com/zalandoresearch/fashion-mnist
+- Ansel, J. et al. (2024). PyTorch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation. ASPLOS '24. https://doi.org/10.1145/3620665.3640366
+- PyTorch 2.7.0 release notes (MPS: "Prototype of torch.compile for Metal") — https://github.com/pytorch/pytorch/releases/tag/v2.7.0
+- Apple. Mac mini (2024) — Technical Specifications. https://support.apple.com/en-us/121555
+- `jax-metal` on PyPI (0.1.1, 2024-10-08) — https://pypi.org/project/jax-metal/
 
 ---
 

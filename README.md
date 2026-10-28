@@ -28,7 +28,16 @@ For detailed technical trade-offs (including why JAX is evaluated on XLA CPU and
 
 ---
 
+## What I learned
+
+Running this benchmark showed me how misleading headline numbers can be when small models meet modern compilers. What surprised me most was `torch.compile` on Apple Silicon MPS: in `results/iteration3_2026-10-27.json`, steady-state throughput varied from 6,600 to 11,663 img/s across fresh process launches, whereas PyTorch FP16 AMP consistently achieved 14,741 img/s without compilation overhead. If I were doing this again, I would profile the GPU command buffer submission latency directly in Apple Instruments and log continuous power draw via `powermetrics` to see whether thermal throttling or kernel dispatch latency was driving the variance.
+
+---
+
 ## Testbench & Hardware Specifications
+
+<details>
+<summary>Machine specs (click to expand)</summary>
 
 ```text
 Machine:             Apple Mac mini (Late 2024)
@@ -39,6 +48,8 @@ Python Runtime:      Python 3.13.6
 PyTorch Backend:     torch 2.14.1 (MPS - Metal Performance Shaders)
 JAX Backend:         jax 0.12.0 / flax 0.12.10 (XLA CPU Vectorized)
 ```
+
+</details>
 
 ---
 
@@ -117,9 +128,11 @@ Each cell is the median of 5 independent processes (5 epochs each; steady state 
 
 ## Architectural Parity: PyTorch vs JAX
 
-Both models use the same architecture, loss, optimiser and learning rate. Initialisation and BatchNorm momentum are made equivalent explicitly in `jax_train.py` (PyTorch's defaults are U(±1/√fan_in) weights and biases and a 0.1 running-stat momentum; Flax's are LeCun-normal weights, zero biases and 0.99 momentum, so library defaults are **not** equivalent).
+Both models use the same architecture, loss, optimiser and learning rate. Initialisation and BatchNorm momentum are made equivalent explicitly in `jax_train.py` (PyTorch's defaults are U(±1/√fan_in) weights and biases and a 0.1 running-stat momentum; Flax's are LeCun-normal weights, zero biases and 0.99 momentum, so library defaults are **not** equivalent). Full implementations: [`torch_train.py`](torch_train.py), [`jax_train.py`](jax_train.py).
 
-### PyTorch (Stateful Object-Oriented + Compiler & AMP)
+<details>
+<summary>PyTorch — CNN, compile, and AMP (excerpt)</summary>
+
 ```python
 class SimpleCNN(nn.Module):
     def __init__(self, in_channels=1, spatial_size=28, num_classes=10):
@@ -162,7 +175,11 @@ class SimpleCNN(nn.Module):
         optimizer.step()
 ```
 
-### JAX / Flax (Pure Functional Transforms + XLA Compilation)
+</details>
+
+<details>
+<summary>JAX / Flax — CNN and jitted train step (excerpt)</summary>
+
 ```python
 class SimpleCNN(nn.Module):
     num_classes: int = 10
@@ -210,6 +227,8 @@ def train_step(state, batch_x, batch_y):
     return state, loss
 ```
 
+</details>
+
 ---
 
 ## How to Reproduce
@@ -256,10 +275,6 @@ python -c "from torch_train import run_pytorch; run_pytorch(model_type='cnn', us
 # JAX / Flax compiled with XLA (FP16)
 python -c "from jax_train import run_jax; run_jax(model_type='cnn', use_fp16=True, batch_size=256)"
 ```
-
-## What I learned
-
-Running this benchmark showed me how misleading headline numbers can be when small models meet modern compilers. What surprised me most was `torch.compile` on Apple Silicon MPS: in `results/iteration3_2026-10-27.json`, steady-state throughput varied from 6,600 to 11,663 img/s across fresh process launches, whereas PyTorch FP16 AMP consistently achieved 14,741 img/s without compilation overhead. If I were doing this again, I would profile the GPU command buffer submission latency directly in Apple Instruments and log continuous power draw via `powermetrics` to see whether thermal throttling or kernel dispatch latency was driving the variance.
 
 ---
 

@@ -36,9 +36,6 @@ Running this benchmark showed me how misleading headline numbers can be when sma
 
 ## Testbench & Hardware Specifications
 
-<details>
-<summary>Machine specs (click to expand)</summary>
-
 ```text
 Machine:             Apple Mac mini (Late 2024)
 SoC:                 Apple M4
@@ -48,8 +45,6 @@ Python Runtime:      Python 3.13.6
 PyTorch Backend:     torch 2.14.1 (MPS - Metal Performance Shaders)
 JAX Backend:         jax 0.12.0 / flax 0.12.10 (XLA CPU Vectorized)
 ```
-
-</details>
 
 ---
 
@@ -128,11 +123,9 @@ Each cell is the median of 5 independent processes (5 epochs each; steady state 
 
 ## Architectural Parity: PyTorch vs JAX
 
-Both models use the same architecture, loss, optimiser and learning rate. Initialisation and BatchNorm momentum are made equivalent explicitly in `jax_train.py` (PyTorch's defaults are U(±1/√fan_in) weights and biases and a 0.1 running-stat momentum; Flax's are LeCun-normal weights, zero biases and 0.99 momentum, so library defaults are **not** equivalent). Full implementations: [`torch_train.py`](torch_train.py), [`jax_train.py`](jax_train.py).
+Both models use the same architecture, loss, optimiser and learning rate. Initialisation and BatchNorm momentum are made equivalent explicitly in `jax_train.py` (PyTorch's defaults are U(±1/√fan_in) weights and biases and a 0.1 running-stat momentum; Flax's are LeCun-normal weights, zero biases and 0.99 momentum, so library defaults are **not** equivalent).
 
-<details>
-<summary>PyTorch — CNN, compile, and AMP (excerpt)</summary>
-
+### PyTorch (Stateful Object-Oriented + Compiler & AMP)
 ```python
 class SimpleCNN(nn.Module):
     def __init__(self, in_channels=1, spatial_size=28, num_classes=10):
@@ -175,11 +168,7 @@ class SimpleCNN(nn.Module):
         optimizer.step()
 ```
 
-</details>
-
-<details>
-<summary>JAX / Flax — CNN and jitted train step (excerpt)</summary>
-
+### JAX / Flax (Pure Functional Transforms + XLA Compilation)
 ```python
 class SimpleCNN(nn.Module):
     num_classes: int = 10
@@ -226,8 +215,6 @@ def train_step(state, batch_x, batch_y):
     state = state.replace(batch_stats=updates["batch_stats"])
     return state, loss
 ```
-
-</details>
 
 ---
 

@@ -24,7 +24,7 @@ As a practitioner, I wanted to see past the marketing announcements, measure per
 * *Does half-precision FP16 mixed precision yield throughput and memory benefits on unified memory?*
 * *Where is the real crossover point where the GPU outpaces the CPU?*
 
-For detailed technical trade-offs (including why JAX is evaluated on XLA CPU and the root cause of FP16 AMP overhead on unified memory), see [Architecture Decision Records (docs/decisions.md)](docs/decisions.md).
+For detailed technical trade-offs (including why JAX is evaluated on XLA CPU and how FP16 behaved on this CNN), see [Architecture Decision Records (docs/decisions.md)](docs/decisions.md).
 
 ---
 
@@ -280,7 +280,7 @@ python -c "from jax_train import run_jax; run_jax(model_type='cnn', use_fp16=Tru
 ## Summary Verdict on the M4 Mac Mini
 
 * **The M4 GPU is fast for batch-scaled workloads:** At batch size 128+ on convolutional networks, Apple's Metal Performance Shaders deliver over **13,800 images/second**, running more than **1.7x faster** than CPU execution.
-* **Compilers and precision on Apple Silicon:** `torch.compile` on MPS shows run-to-run variance across fresh process launches, while FP16 AMP delivers a solid **1.4x** speedup reaching **14,700+ images/second** on the 422k-parameter CNN.
+* **Compilers and precision on Apple Silicon:** `torch.compile` on MPS shows run-to-run variance across fresh process launches, while FP16 AMP delivers a solid **1.4x** speedup reaching **14,700+ images/second** on the 421,834-parameter CNN.
 * **Watch out for dispatch latency on small models:** If your network is small (e.g. shallow MLPs) or batch size is tiny (≤ 64), GPU dispatch overhead is noticeable, and compiled XLA execution on the M4 CPU is faster.
 * **Verdict:** The M4 Mac mini is a capable local testbench for small-model prototyping before scaling to cloud hardware.
 

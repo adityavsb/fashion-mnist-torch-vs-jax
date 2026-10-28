@@ -76,7 +76,7 @@ def get_device_arrays(dataset_name="FashionMNIST", precision_dtype=jnp.float32):
     """Load the whole dataset once as normalised float arrays on JAX device.
     Returns (train_x, train_y, test_x, test_y) with x in NHWC."""
     if dataset_name.lower() == "cifar10":
-        raise NotImplementedError("CIFAR-10 preloading not implemented; see T1.1 note.")
+        raise NotImplementedError("CIFAR-10 preloading not implemented yet.")
     from torchvision import datasets
     tr = datasets.FashionMNIST(root="./data", train=True, download=True)
     te = datasets.FashionMNIST(root="./data", train=False, download=True)

@@ -69,9 +69,9 @@ Evaluate FP16 mixed precision on the M4 Mac mini using:
 * JAX/Flax: compute dtype `jnp.float16` on every layer (`dtype=`); parameters remain float32 (Flax `param_dtype` default). This is mixed precision, not pure FP16.
 
 ### Empirical Findings & Trade-Off
-* **Result:** PyTorch FP16 on MPS achieved **11,284 img/s** compared to **11,761 img/s** on FP32 (a 4% throughput degradation, 0.96x).
-* **Root Cause:** our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256. On the Apple M4's 120 GB/s unified memory architecture, memory bandwidth is not saturated. `torch.autocast` inserts per-op dtype casts around each kernel; no `GradScaler` is used in this benchmark (loss scaling is not performed). On a 422k-parameter model the cast overhead is comparable to the arithmetic saved, so no net gain is expected; this is an observation, not a profiled root cause.
-* **Engineering Rationale:** The FP16 result is reported as measured. FP16 on Apple Silicon provides massive leverage for memory-bound workloads (LLMs, large Vision Transformers), but should not be blindly enabled for lightweight convolutional models.
+* **Result:** With the training step isolated and $N=5$ subprocess runs (`results/iteration3_2026-10-27.json`, batch 256, steady state = epoch 3), PyTorch FP16 AMP on MPS reached **14,741 img/s** (median) vs **10,537 img/s** for FP32 eager (**1.4×**). JAX mixed precision (FP16 compute, FP32 params) reached **7,652 img/s** vs **6,967 img/s** for FP32 (**~1.1×**; within reported run-to-run spread).
+* **Root Cause:** our CNN's resident state (weights, gradients, Adam moments) is 6.4 MB and its peak step allocation is 299.4 MB at batch 256. On the Apple M4's 120 GB/s unified memory architecture, memory bandwidth is not saturated. `torch.autocast` inserts per-op dtype casts around each kernel; no `GradScaler` is used in this benchmark (loss scaling is not performed). On this 421,834-parameter CNN, MPS still delivered a clear throughput gain from FP16 conv execution despite cast overhead.
+* **Engineering Rationale:** Report numbers from the committed JSON artifacts. FP16 on Apple Silicon can help even when the model is not memory-bound; do not extrapolate this 1.4× to large models or other backends without re-measurement.
 
 ---
 

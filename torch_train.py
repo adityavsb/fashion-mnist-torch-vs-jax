@@ -56,7 +56,7 @@ def get_device_tensors(dataset_name="FashionMNIST", device="mps"):
     """Load the whole dataset once as normalised float tensors on `device`.
     Returns (train_x, train_y, test_x, test_y) with x in NCHW."""
     if dataset_name.lower() == "cifar10":
-        raise NotImplementedError("CIFAR-10 preloading not implemented; see T1.1 note.")
+        raise NotImplementedError("CIFAR-10 preloading not implemented yet.")
     from torchvision import datasets
     tr = datasets.FashionMNIST(root="./data", train=True, download=True)
     te = datasets.FashionMNIST(root="./data", train=False, download=True)
